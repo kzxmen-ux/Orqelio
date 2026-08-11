@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "node --test --experimental-strip-types src/features/crm-connections/marketplace/altegio.test.ts src/features/crm-connections/providers/altegio/callback-validation.test.ts src/features/crm-connections/providers/altegio/marketplace-transport.test.ts src/features/crm-connections/providers/altegio/activation-service.test.ts src/features/organizations/dashboard-state.test.ts src/features/webhooks/altegio/handler.test.ts src/features/webhooks/yclients/handler.test.ts",
+    "test": "node --test --experimental-strip-types src/features/ai-manager-settings/ai-manager-settings-migration.test.ts src/features/ai-manager-settings/validation/ai-manager-settings.test.ts src/features/crm-connections/marketplace/altegio.test.ts src/features/crm-connections/providers/altegio/callback-validation.test.ts src/features/crm-connections/providers/altegio/marketplace-transport.test.ts src/features/crm-connections/providers/altegio/activation-service.test.ts src/features/organizations/dashboard-state.test.ts src/features/webhooks/altegio/handler.test.ts src/features/webhooks/yclients/handler.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

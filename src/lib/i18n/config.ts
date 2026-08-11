@@ -508,6 +508,13 @@ const translations: Record<Locale, Record<string, string>> = {
     "Update the organization name and workspace address.":
       "Измените название организации и адрес рабочего пространства.",
     "AI manager": "AI-менеджер",
+    "Configure AI manager": "Настроить AI-менеджера",
+    "Configure communication and human handoff rules.":
+      "Настройте общение и правила передачи диалога человеку.",
+    "Altegio and AI manager settings are ready. Review your integration when needed.":
+      "Altegio и настройки AI-менеджера готовы. При необходимости проверьте интеграцию.",
+    "Add business context and handoff rules before Orqelio starts working with customers.":
+      "Добавьте контекст о бизнесе и правила передачи диалога до начала работы Orqelio с клиентами.",
     "Messages": "Сообщения",
     "Analytics": "Аналитика",
     "Language": "Язык",
@@ -1008,6 +1015,13 @@ const translations: Record<Locale, Record<string, string>> = {
     "Update the organization name and workspace address.":
       "Ұйым атауы мен жұмыс кеңістігінің мекенжайын өзгертіңіз.",
     "AI manager": "ЖИ-менеджер",
+    "Configure AI manager": "ЖИ-менеджерді баптау",
+    "Configure communication and human handoff rules.":
+      "Сөйлесу және диалогты адамға беру ережелерін баптаңыз.",
+    "Altegio and AI manager settings are ready. Review your integration when needed.":
+      "Altegio мен ЖИ-менеджер баптаулары дайын. Қажет болса, интеграцияны тексеріңіз.",
+    "Add business context and handoff rules before Orqelio starts working with customers.":
+      "Orqelio клиенттермен жұмыс істей бастағанға дейін бизнес контексті мен диалогты беру ережелерін қосыңыз.",
     "Messages": "Хабарламалар",
     "Analytics": "Аналитика",
     "Language": "Тіл",

@@ -6,6 +6,7 @@ import type { Organization } from "../types";
 
 type WorkspaceSection =
   | "administrators"
+  | "ai-manager"
   | "integrations"
   | "overview"
   | "settings";
@@ -27,6 +28,11 @@ export async function OrganizationWorkspaceNavigation({
       href: `${basePath}/integrations`,
       label: t("Integrations"),
       section: "integrations" as const,
+    },
+    {
+      href: `${basePath}/ai-manager`,
+      label: t("AI manager"),
+      section: "ai-manager" as const,
     },
     {
       href:

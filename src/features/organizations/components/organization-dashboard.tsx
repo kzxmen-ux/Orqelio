@@ -89,7 +89,8 @@ export async function OrganizationDashboard({
   const basePath = `/app/organizations/${organization.id}`;
   const crmPath = `${basePath}/integrations/crm`;
   const altegioConnected = data.altegio.status === "connected";
-  const completedSteps = altegioConnected ? 2 : 1;
+  const aiManagerReady = data.aiManagerStatus === "ready";
+  const completedSteps = 1 + Number(altegioConnected) + Number(aiManagerReady);
   const totalSteps = 6;
   const progress = Math.round((completedSteps / totalSteps) * 100);
   const setupSteps = [
@@ -99,7 +100,10 @@ export async function OrganizationDashboard({
       state: altegioConnected ? ("completed" as const) : ("current" as const),
     },
     { label: t("Services and staff imported"), state: "locked" as const },
-    { label: t("AI manager configured"), state: "locked" as const },
+    {
+      label: t("AI manager configured"),
+      state: aiManagerReady ? ("completed" as const) : ("current" as const),
+    },
     { label: t("Messaging channel connected"), state: "locked" as const },
     { label: t("Orqelio launched"), state: "locked" as const },
   ];
@@ -135,7 +139,7 @@ export async function OrganizationDashboard({
       description: t("The saved Altegio connection is marked as disconnected."),
     },
   }[data.altegio.status];
-  const primaryAction =
+  const integrationAction =
     data.altegio.status === "not_connected"
       ? { href: crmPath, label: t("Connect Altegio") }
       : data.altegio.status === "incomplete" && data.altegio.connectionId
@@ -144,7 +148,18 @@ export async function OrganizationDashboard({
             label: t("Continue connection"),
           }
         : { href: crmPath, label: t("Open integrations") };
+  const primaryAction = !altegioConnected
+    ? integrationAction
+    : !aiManagerReady
+      ? { href: `${basePath}/ai-manager`, label: t("Configure AI manager") }
+      : integrationAction;
   const quickActions = [
+    {
+      description: t("Configure communication and human handoff rules."),
+      href: `${basePath}/ai-manager`,
+      icon: "ai" as const,
+      label: t("AI manager"),
+    },
     {
       description: t("Manage CRM connections and provider setup."),
       href: `${basePath}/integrations`,
@@ -267,14 +282,16 @@ export async function OrganizationDashboard({
             </p>
             <h3 className="mt-3 text-xl font-semibold">
               {altegioConnected
-                ? t("Review your integration")
+                ? aiManagerReady
+                  ? t("Review your integration")
+                  : t("Configure AI manager")
                 : t("Connect Altegio")}
             </h3>
             <p className="mt-3 text-sm leading-6 text-slate-300">
               {altegioConnected
-                ? t(
-                    "Altegio is connected. Future setup stages will become available as they are implemented.",
-                  )
+                ? aiManagerReady
+                  ? t("Altegio and AI manager settings are ready. Review your integration when needed.")
+                  : t("Add business context and handoff rules before Orqelio starts working with customers.")
                 : t(
                     "Start with Altegio so Orqelio can use your existing business system when activation becomes available.",
                   )}
@@ -412,7 +429,6 @@ export async function OrganizationDashboard({
             ),
           )}
           {[
-            { icon: "ai" as const, label: t("AI manager") },
             { icon: "messages" as const, label: t("Messages") },
             { icon: "analytics" as const, label: t("Analytics") },
           ].map((action) => (

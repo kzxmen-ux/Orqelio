@@ -10,6 +10,7 @@ import {
 } from "../dashboard-state";
 
 export type OrganizationDashboardData = {
+  aiManagerStatus: "draft" | "ready" | null;
   altegio: {
     connectionId: string | null;
     providerLabel: string;
@@ -18,6 +19,19 @@ export type OrganizationDashboardData = {
   };
   memberCount: number | null;
 };
+
+async function getAiManagerStatus(
+  organizationId: string,
+): Promise<"draft" | "ready" | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("ai_manager_configurations")
+    .select("status")
+    .eq("organization_id", organizationId)
+    .maybeSingle<{ status: "draft" | "ready" }>();
+
+  return error || !data ? null : data.status;
+}
 
 async function getOrganizationMemberCount(
   organizationId: string,
@@ -43,15 +57,17 @@ async function getOrganizationMemberCount(
 export async function getOrganizationDashboardData(
   organizationId: string,
 ): Promise<OrganizationDashboardData> {
-  const [connections, memberCount] = await Promise.all([
+  const [connections, memberCount, aiManagerStatus] = await Promise.all([
     listCrmConnections(organizationId),
     getOrganizationMemberCount(organizationId),
+    getAiManagerStatus(organizationId),
   ]);
   const resolvedAltegio = resolveAltegioDashboardConnection(connections);
   const altegioConnection = resolvedAltegio.connection;
 
   if (!altegioConnection) {
     return {
+      aiManagerStatus,
       altegio: {
         connectionId: null,
         providerLabel: "Altegio",
@@ -67,6 +83,7 @@ export async function getOrganizationDashboardData(
   ).getConnectionMetadata(altegioConnection);
 
   return {
+    aiManagerStatus,
     altegio: {
       connectionId: altegioConnection.id,
       providerLabel: metadata?.providerLabel ?? "Altegio",
