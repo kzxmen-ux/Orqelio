@@ -508,6 +508,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "Update the organization name and workspace address.":
       "Измените название организации и адрес рабочего пространства.",
     "AI manager": "AI-менеджер",
+    "Activity history": "История действий",
     "Configure AI manager": "Настроить AI-менеджера",
     "Configure communication and human handoff rules.":
       "Настройте общение и правила передачи диалога человеку.",
@@ -1015,6 +1016,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "Update the organization name and workspace address.":
       "Ұйым атауы мен жұмыс кеңістігінің мекенжайын өзгертіңіз.",
     "AI manager": "ЖИ-менеджер",
+    "Activity history": "Әрекеттер тарихы",
     "Configure AI manager": "ЖИ-менеджерді баптау",
     "Configure communication and human handoff rules.":
       "Сөйлесу және диалогты адамға беру ережелерін баптаңыз.",
