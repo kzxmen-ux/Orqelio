@@ -34,6 +34,7 @@ const copy = {
     contextHelp: "Расскажите только то, что помогает общаться с клиентами. Услуги, цены, сотрудники и расписание должны оставаться в Altegio.",
     handoff: "Передача администратору",
     handoffHelp: "Orqelio должна остановить автоматический ответ и передать диалог человеку в выбранных случаях.",
+    handoffSafety: "Обязательные правила безопасности Orqelio действуют всегда: настройки организации могут добавить случаи передачи, но не отключить запрос человека, медицинский риск или спор по оплате.",
     rules: ["Клиент просит администратора", "AI не понимает запрос", "Ошибка при записи", "Жалоба клиента", "Медицинский вопрос или противопоказания", "Возврат денег / спор по оплате"],
     other: "Другие случаи (необязательно)",
     validation: "Что нужно дополнить для статуса «Готово»",
@@ -70,6 +71,7 @@ const copy = {
     contextHelp: "Клиенттермен сөйлесуге көмектесетін ақпаратты ғана жазыңыз. Қызметтер, бағалар, қызметкерлер және кесте Altegio-да қалуы тиіс.",
     handoff: "Әкімшіге беру",
     handoffHelp: "Таңдалған жағдайларда Orqelio автоматты жауапты тоқтатып, диалогты адамға беруі тиіс.",
+    handoffSafety: "Orqelio-ның міндетті қауіпсіздік ережелері әрқашан қолданылады: ұйым баптаулары беру жағдайларын қоса алады, бірақ адамды сұрауды, медициналық қауіпті немесе төлем дауын өшіре алмайды.",
     rules: ["Клиент әкімшіні сұрайды", "Orqelio жауапқа сенімді емес", "Жазылу қатесі", "Клиент шағымы", "Медициналық сұрақ", "Төлем дауы"],
     other: "Басқа жағдайлар (міндетті емес)",
     validation: "«Дайын» мәртебесі үшін толықтыру қажет",
@@ -165,6 +167,7 @@ export function AiManagerSettingsForm({
       <fieldset className="rounded-2xl border border-slate-200 p-5 sm:p-6">
         <legend className="px-2 text-base font-semibold text-slate-950">{c.handoff}</legend>
         <p className="text-sm leading-6 text-slate-600">{c.handoffHelp}</p>
+        <p className="mt-2 rounded-xl bg-indigo-50 px-4 py-3 text-xs leading-5 text-indigo-900">{c.handoffSafety}</p>
         <div className="mt-5 grid gap-3 sm:grid-cols-2">
           {handoffNames.map((name, index) => {
             const values = [configuration.handoff.clientRequestsAdmin, configuration.handoff.aiUncertain, configuration.handoff.bookingError, configuration.handoff.customerComplaint, configuration.handoff.medicalQuestion, configuration.handoff.paymentDispute];
