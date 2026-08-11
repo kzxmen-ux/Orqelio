@@ -231,6 +231,16 @@ export default async function CrmConnectionsPage({
                 : undefined}
             />
             <CrmProviderCard
+              actionLabel={t("Coming soon")}
+              badge={t("Agreement in progress")}
+              description={t(
+                "DIKIDI integration is planned. After connection, Orqelio will be able to use the business services, staff, schedule, and bookings.",
+              )}
+              meta={t("API access is being coordinated with DIKIDI.")}
+              monogram="D"
+              name="DIKIDI"
+            />
+            <CrmProviderCard
               actionLabel={t("Configure")}
               badge={t("Development only")}
               description={t(

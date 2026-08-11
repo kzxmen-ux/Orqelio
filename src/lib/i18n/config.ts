@@ -146,6 +146,11 @@ const translations: Record<Locale, Record<string, string>> = {
       "Выберите провайдера. Рабочие интеграции станут доступны после реализации и проверки их адаптеров.",
     "Official integration": "Официальная интеграция",
     "Coming soon": "Скоро",
+    "Agreement in progress": "В процессе согласования",
+    "DIKIDI integration is planned. After connection, Orqelio will be able to use the business services, staff, schedule, and bookings.":
+      "Интеграция с DIKIDI планируется. Orqelio сможет использовать услуги, сотрудников, расписание и записи бизнеса после подключения.",
+    "API access is being coordinated with DIKIDI.":
+      "API-доступ согласовывается с DIKIDI",
     "YCLIENTS integration is planned and cannot be connected yet.":
       "Интеграция YCLIENTS запланирована, но пока недоступна для подключения.",
     "Altegio integration is planned and cannot be connected yet.":
@@ -655,6 +660,11 @@ const translations: Record<Locale, Record<string, string>> = {
       "Провайдерді таңдаңыз. Жұмыс интеграциялары адаптерлері іске асырылып, тексерілгеннен кейін қолжетімді болады.",
     "Official integration": "Ресми интеграция",
     "Coming soon": "Жақында",
+    "Agreement in progress": "Келісу процесінде",
+    "DIKIDI integration is planned. After connection, Orqelio will be able to use the business services, staff, schedule, and bookings.":
+      "DIKIDI интеграциясы жоспарланып отыр. Қосылғаннан кейін Orqelio бизнестің қызметтерін, қызметкерлерін, кестесін және жазбаларын пайдалана алады.",
+    "API access is being coordinated with DIKIDI.":
+      "DIKIDI-мен API рұқсаты келісілуде",
     "YCLIENTS integration is planned and cannot be connected yet.":
       "YCLIENTS интеграциясы жоспарланған, бірақ әзірге қосу мүмкін емес.",
     "Altegio integration is planned and cannot be connected yet.":
