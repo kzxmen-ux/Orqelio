@@ -6,6 +6,9 @@ import { CrmProviderCard } from "@/features/crm-connections/components/crm-provi
 import { getBookingProvider } from "@/features/crm-connections/providers/booking-provider-registry";
 import { listCrmConnections } from "@/features/crm-connections/queries/crm-connections";
 import type { CrmConnectionStatus } from "@/features/crm-connections/types";
+import { integrationStatusLabel } from "@/features/integration-status/presentation";
+import { listAltegioIntegrationAttempts } from "@/features/integration-status/queries/altegio-status";
+import { resolveAltegioStatusCenter } from "@/features/integration-status/status-center";
 import { OrganizationWorkspaceNavigation } from "@/features/organizations/components/organization-workspace-navigation";
 import { getOrganizationForCurrentUser } from "@/features/organizations/queries/organizations";
 import { organizationIdSchema } from "@/features/organizations/validation/organization";
@@ -72,7 +75,16 @@ export default async function CrmConnectionsPage({
     notFound();
   }
 
-  const connections = await listCrmConnections(organization.id);
+  const [connections, attemptResult, locale, t] = await Promise.all([
+    listCrmConnections(organization.id),
+    listAltegioIntegrationAttempts(organization.id),
+    getLocale(),
+    getTranslator(),
+  ]);
+  const altegioCenter = resolveAltegioStatusCenter({
+    attempts: attemptResult.attempts,
+    connections,
+  });
   const connectionCards = await Promise.all(
     connections.map(async (connection) => ({
       connection,
@@ -81,7 +93,11 @@ export default async function CrmConnectionsPage({
       ).getConnectionMetadata(connection),
     })),
   );
-  const [locale, t] = await Promise.all([getLocale(), getTranslator()]);
+  const altegioDetailsPath = `/app/organizations/${organization.id}/integrations/altegio`;
+  const hasAltegioState = altegioCenter.status !== "not_connected";
+  const altegioActionLabel = ["activation", "awaiting_return", "partial", "started", "verification"].includes(altegioCenter.status)
+    ? locale === "ru" ? "Продолжить подключение" : "Қосылымды жалғастыру"
+    : locale === "ru" ? "Открыть детали" : "Толық мәліметті ашу";
 
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-8 sm:px-10">
@@ -152,9 +168,13 @@ export default async function CrmConnectionsPage({
                       </span>
                       <Link
                         className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700"
-                        href={`/app/organizations/${organization.id}/integrations/crm/${connection.id}`}
+                        href={connection.provider === "altegio"
+                          ? altegioDetailsPath
+                          : `/app/organizations/${organization.id}/integrations/crm/${connection.id}`}
                       >
-                        {t("Edit")}
+                        {connection.provider === "altegio"
+                          ? locale === "ru" ? "Детали" : "Толық мәлімет"
+                          : t("Edit")}
                       </Link>
                     </div>
                   </div>
@@ -188,17 +208,27 @@ export default async function CrmConnectionsPage({
           <div className="mt-7 grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             <CrmProviderCard
               action={
-                <AltegioMarketplaceConnectButton
-                  organizationId={organization.id}
-                />
+                hasAltegioState ? (
+                  <Link
+                    className="mt-6 inline-flex w-full items-center justify-center rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+                    href={altegioDetailsPath}
+                  >
+                    {altegioActionLabel}
+                  </Link>
+                ) : (
+                  <AltegioMarketplaceConnectButton organizationId={organization.id} />
+                )
               }
               actionLabel={t("Connect Altegio")}
-              badge={t("Official integration")}
+              badge={integrationStatusLabel(altegioCenter.status, locale)}
               description={t(
                 "You will be redirected to Altegio to choose one or more locations and confirm access. After confirmation, Altegio will return you to Orqelio.",
               )}
               monogram="A"
               name="Altegio"
+              meta={altegioCenter.lastMeaningfulAt
+                ? `${locale === "ru" ? "Последнее изменение" : "Соңғы өзгеріс"}: ${formatLastSync(altegioCenter.lastMeaningfulAt, locale, t("Never"))}`
+                : undefined}
             />
             <CrmProviderCard
               actionLabel={t("Configure")}

@@ -9,6 +9,7 @@ type CrmProviderCardProps = {
   href?: string;
   monogram: string;
   name: string;
+  meta?: string;
 };
 
 export function CrmProviderCard({
@@ -19,6 +20,7 @@ export function CrmProviderCard({
   href,
   monogram,
   name,
+  meta,
 }: CrmProviderCardProps) {
   return (
     <article className="flex min-h-64 flex-col rounded-3xl border border-slate-200 bg-white p-6 shadow-sm transition hover:border-indigo-200 hover:shadow-md">
@@ -43,6 +45,7 @@ export function CrmProviderCard({
       <div className="mt-6 flex-1">
         <h3 className="text-xl font-semibold text-slate-950">{name}</h3>
         <p className="mt-2 text-sm leading-6 text-slate-600">{description}</p>
+        {meta ? <p className="mt-3 text-xs font-medium text-slate-500">{meta}</p> : null}
       </div>
 
       {action ?? (href ? (
