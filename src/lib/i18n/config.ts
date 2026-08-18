@@ -467,7 +467,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "Setup progress": "Прогресс настройки",
     "steps completed": "этапов завершено",
     "Organization created": "Организация создана",
-    "Altegio connected": "Altegio подключена",
+    "Integration connected": "Интеграция подключена",
     "Services and staff imported": "Услуги и сотрудники импортированы",
     "AI manager configured": "AI-менеджер настроен",
     "Messaging channel connected": "Канал сообщений подключён",
@@ -475,10 +475,10 @@ const translations: Record<Locale, Record<string, string>> = {
     "Soon": "Скоро",
     "Next available action": "Следующее доступное действие",
     "Review your integration": "Проверьте интеграцию",
-    "Altegio is connected. Future setup stages will become available as they are implemented.":
-      "Altegio подключена. Следующие этапы настройки станут доступны после их реализации.",
-    "Start with Altegio so Orqelio can use your existing business system when activation becomes available.":
-      "Начните с Altegio, чтобы Orqelio могла использовать вашу рабочую систему после появления активации.",
+    "The integration is connected. Future setup stages will become available as they are implemented.":
+      "Интеграция подключена. Следующие этапы настройки станут доступны после их реализации.",
+    "Connect a booking integration so Orqelio can use your existing business system after activation.":
+      "Подключите систему записи, чтобы после активации Orqelio могла использовать вашу рабочую систему.",
     "Connected": "Подключено",
     "Connection error": "Ошибка подключения",
     "Connection incomplete": "Подключение не завершено",
@@ -518,8 +518,8 @@ const translations: Record<Locale, Record<string, string>> = {
     "Configure AI manager": "Настроить AI-менеджера",
     "Configure communication and human handoff rules.":
       "Настройте общение и правила передачи диалога человеку.",
-    "Altegio and AI manager settings are ready. Review your integration when needed.":
-      "Altegio и настройки AI-менеджера готовы. При необходимости проверьте интеграцию.",
+    "The integration and AI manager settings are ready. Review your integration when needed.":
+      "Интеграция и настройки AI-менеджера готовы. При необходимости проверьте подключение.",
     "Add business context and handoff rules before Orqelio starts working with customers.":
       "Добавьте контекст о бизнесе и правила передачи диалога до начала работы Orqelio с клиентами.",
     "Messages": "Сообщения",
@@ -981,7 +981,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "Setup progress": "Баптау барысы",
     "steps completed": "кезең аяқталды",
     "Organization created": "Ұйым құрылды",
-    "Altegio connected": "Altegio қосылды",
+    "Integration connected": "Интеграция қосылды",
     "Services and staff imported": "Қызметтер мен қызметкерлер импортталды",
     "AI manager configured": "ЖИ-менеджер бапталды",
     "Messaging channel connected": "Хабар алмасу арнасы қосылды",
@@ -989,10 +989,10 @@ const translations: Record<Locale, Record<string, string>> = {
     "Soon": "Жақында",
     "Next available action": "Келесі қолжетімді әрекет",
     "Review your integration": "Интеграцияны тексеріңіз",
-    "Altegio is connected. Future setup stages will become available as they are implemented.":
-      "Altegio қосылды. Келесі баптау кезеңдері іске асырылғаннан кейін қолжетімді болады.",
-    "Start with Altegio so Orqelio can use your existing business system when activation becomes available.":
-      "Белсендіру қолжетімді болғанда Orqelio қолданыстағы бизнес жүйеңізді пайдалана алуы үшін Altegio-дан бастаңыз.",
+    "The integration is connected. Future setup stages will become available as they are implemented.":
+      "Интеграция қосылды. Келесі баптау кезеңдері іске асырылғаннан кейін қолжетімді болады.",
+    "Connect a booking integration so Orqelio can use your existing business system after activation.":
+      "Белсендірілгеннен кейін Orqelio қолданыстағы бизнес жүйеңізді пайдалана алуы үшін жазылу жүйесін қосыңыз.",
     "Connected": "Қосылған",
     "Connection error": "Қосылым қатесі",
     "Connection incomplete": "Қосылым аяқталмаған",
@@ -1032,8 +1032,8 @@ const translations: Record<Locale, Record<string, string>> = {
     "Configure AI manager": "ЖИ-менеджерді баптау",
     "Configure communication and human handoff rules.":
       "Сөйлесу және диалогты адамға беру ережелерін баптаңыз.",
-    "Altegio and AI manager settings are ready. Review your integration when needed.":
-      "Altegio мен ЖИ-менеджер баптаулары дайын. Қажет болса, интеграцияны тексеріңіз.",
+    "The integration and AI manager settings are ready. Review your integration when needed.":
+      "Интеграция мен ЖИ-менеджер баптаулары дайын. Қажет болса, қосылымды тексеріңіз.",
     "Add business context and handoff rules before Orqelio starts working with customers.":
       "Orqelio клиенттермен жұмыс істей бастағанға дейін бизнес контексті мен диалогты беру ережелерін қосыңыз.",
     "Messages": "Хабарламалар",

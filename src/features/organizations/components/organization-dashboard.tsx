@@ -96,7 +96,7 @@ export async function OrganizationDashboard({
   const setupSteps = [
     { label: t("Organization created"), state: "completed" as const },
     {
-      label: t("Altegio connected"),
+      label: t("Integration connected"),
       state: altegioConnected ? ("completed" as const) : ("current" as const),
     },
     { label: t("Services and staff imported"), state: "locked" as const },
@@ -290,10 +290,10 @@ export async function OrganizationDashboard({
             <p className="mt-3 text-sm leading-6 text-slate-300">
               {altegioConnected
                 ? aiManagerReady
-                  ? t("Altegio and AI manager settings are ready. Review your integration when needed.")
+                  ? t("The integration and AI manager settings are ready. Review your integration when needed.")
                   : t("Add business context and handoff rules before Orqelio starts working with customers.")
                 : t(
-                    "Start with Altegio so Orqelio can use your existing business system when activation becomes available.",
+                    "Connect a booking integration so Orqelio can use your existing business system after activation.",
                   )}
             </p>
             <Link
