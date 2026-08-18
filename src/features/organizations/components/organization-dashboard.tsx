@@ -141,7 +141,7 @@ export async function OrganizationDashboard({
   }[data.altegio.status];
   const integrationAction =
     data.altegio.status === "not_connected"
-      ? { href: crmPath, label: t("Connect Altegio") }
+      ? { href: crmPath, label: t("Connect integration") }
       : data.altegio.status === "incomplete" && data.altegio.connectionId
         ? {
             href: `${crmPath}/${data.altegio.connectionId}`,
@@ -285,7 +285,7 @@ export async function OrganizationDashboard({
                 ? aiManagerReady
                   ? t("Review your integration")
                   : t("Configure AI manager")
-                : t("Connect Altegio")}
+                : t("Connect integration")}
             </h3>
             <p className="mt-3 text-sm leading-6 text-slate-300">
               {altegioConnected

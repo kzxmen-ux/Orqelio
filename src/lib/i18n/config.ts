@@ -156,6 +156,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "Altegio integration is planned and cannot be connected yet.":
       "Интеграция Altegio запланирована, но пока недоступна для подключения.",
     "Connect Altegio": "Подключить Altegio",
+    "Connect integration": "Подключить интеграцию",
     "Redirecting to Altegio…": "Переходим в Altegio…",
     "You will be redirected to Altegio to choose one or more locations and confirm access. After confirmation, Altegio will return you to Orqelio.":
       "Вы перейдёте в Altegio, выберете один или несколько филиалов и подтвердите доступ. После подтверждения Altegio вернёт вас в Orqelio.",
@@ -670,6 +671,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "Altegio integration is planned and cannot be connected yet.":
       "Altegio интеграциясы жоспарланған, бірақ әзірге қосу мүмкін емес.",
     "Connect Altegio": "Altegio-ны қосу",
+    "Connect integration": "Интеграцияны қосу",
     "Redirecting to Altegio…": "Altegio-ға өтуде…",
     "You will be redirected to Altegio to choose one or more locations and confirm access. After confirmation, Altegio will return you to Orqelio.":
       "Сіз Altegio-ға өтіп, бір немесе бірнеше филиалды таңдап, қолжетімділікті растайсыз. Растаудан кейін Altegio сізді Orqelio-ға қайтарады.",
