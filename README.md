@@ -42,7 +42,7 @@ Open `http://localhost:3000`.
    In production, set the public application origin to:
 
    ```text
-   NEXT_PUBLIC_APP_URL=https://orqelio.vercel.app
+   NEXT_PUBLIC_APP_URL=https://orqelio.kz
    ```
 
 4. In **Authentication → URL Configuration**, set the Site URL to:
@@ -139,7 +139,7 @@ No CRM connection is created by this action.
 Set Altegio's **Registration Redirect URL** to:
 
 ```text
-https://orqelio.vercel.app/integrations/altegio/callback
+https://orqelio.kz/integrations/altegio/callback
 ```
 
 The callback requires Supabase authentication and owner or admin access to at
@@ -151,7 +151,7 @@ call the Altegio API.
 Configure Altegio JSON webhooks at:
 
 ```text
-https://orqelio.vercel.app/api/webhooks/altegio
+https://orqelio.kz/api/webhooks/altegio
 ```
 
 The endpoint accepts at most 256 KiB, validates the documented
@@ -195,7 +195,7 @@ step.
 Configure YCLIENTS to send JSON webhooks to:
 
 ```text
-https://orqelio.vercel.app/api/webhooks/yclients
+https://orqelio.kz/api/webhooks/yclients
 ```
 
 The endpoint accepts at most 256 KiB and validates only the documented
