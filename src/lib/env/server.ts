@@ -56,3 +56,30 @@ export function getAltegioServerEnvironment(): AltegioServerEnvironment {
 
   return { applicationId, partnerToken, userToken };
 }
+
+function getRequiredServerSecret(
+  name: string,
+  value: string | undefined,
+): string {
+  const secret = value?.trim();
+
+  if (!secret) {
+    throw new Error(`${name} is not configured.`);
+  }
+
+  return secret;
+}
+
+export function getWhatsappWebhookVerifyToken(): string {
+  return getRequiredServerSecret(
+    "WhatsApp webhook verification",
+    process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
+  );
+}
+
+export function getMetaAppSecret(): string {
+  return getRequiredServerSecret(
+    "Meta application secret",
+    process.env.META_APP_SECRET,
+  );
+}
