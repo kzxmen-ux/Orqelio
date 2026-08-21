@@ -42,10 +42,15 @@ function verifier(rawBody: Uint8Array, signatureHeader: string | null): boolean 
 
 test("valid signed Meta envelope is stored before a 200 ACK", async () => {
   let storedPayload: Record<string, unknown> | undefined;
+  const eventId = crypto.randomUUID();
+  const scheduledEventIds: string[] = [];
   const response = await handleWhatsappWebhook(requestFor(VALID_JSON), {
+    scheduleProcessing: (scheduledEventId) => {
+      scheduledEventIds.push(scheduledEventId);
+    },
     storeEvent: async (payload) => {
       storedPayload = payload;
-      return { eventId: crypto.randomUUID(), outcome: "accepted" };
+      return { eventId, outcome: "accepted" };
     },
     verifySignature: verifier,
   });
@@ -54,12 +59,18 @@ test("valid signed Meta envelope is stored before a 200 ACK", async () => {
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.deepEqual(await response.json(), { duplicate: false, ok: true });
   assert.deepEqual(storedPayload, JSON.parse(VALID_JSON));
+  assert.deepEqual(scheduledEventIds, [eventId]);
 });
 
 test("duplicate event receives a successful idempotent ACK", async () => {
+  const eventId = crypto.randomUUID();
+  const scheduledEventIds: string[] = [];
   const response = await handleWhatsappWebhook(requestFor(VALID_JSON), {
+    scheduleProcessing: (scheduledEventId) => {
+      scheduledEventIds.push(scheduledEventId);
+    },
     storeEvent: async () => ({
-      eventId: crypto.randomUUID(),
+      eventId,
       outcome: "duplicate",
     }),
     verifySignature: verifier,
@@ -67,6 +78,33 @@ test("duplicate event receives a successful idempotent ACK", async () => {
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { duplicate: true, ok: true });
+  assert.deepEqual(scheduledEventIds, [eventId]);
+});
+
+test("returns the 200 ACK without waiting for processor completion", async () => {
+  let processorCompleted = false;
+  let finishProcessor: (() => void) | undefined;
+  const processorCompletion = new Promise<void>((resolve) => {
+    finishProcessor = resolve;
+  }).then(() => {
+    processorCompleted = true;
+  });
+
+  const response = await handleWhatsappWebhook(requestFor(VALID_JSON), {
+    scheduleProcessing: () => {
+      void processorCompletion;
+    },
+    storeEvent: async () => ({
+      eventId: crypto.randomUUID(),
+      outcome: "accepted",
+    }),
+    verifySignature: verifier,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(processorCompleted, false);
+  finishProcessor?.();
+  await processorCompletion;
 });
 
 test("missing signature returns 401 without storing", async () => {
@@ -85,9 +123,13 @@ test("missing signature returns 401 without storing", async () => {
 
 test("invalid signature returns 401", async () => {
   const invalidSignature = `sha256=${"0".repeat(64)}`;
+  let scheduleWasCalled = false;
   const response = await handleWhatsappWebhook(
     requestFor(VALID_JSON, invalidSignature),
     {
+      scheduleProcessing: () => {
+        scheduleWasCalled = true;
+      },
       storeEvent: async () => {
         assert.fail("store must not be called");
       },
@@ -96,6 +138,7 @@ test("invalid signature returns 401", async () => {
   );
 
   assert.equal(response.status, 401);
+  assert.equal(scheduleWasCalled, false);
 });
 
 test("body modified after signature generation returns 401", async () => {
@@ -181,7 +224,11 @@ test("actual body larger than 256 KiB returns 413", async () => {
 });
 
 test("repository failure returns 503 and never ACKs early", async () => {
+  let scheduleWasCalled = false;
   const response = await handleWhatsappWebhook(requestFor(VALID_JSON), {
+    scheduleProcessing: () => {
+      scheduleWasCalled = true;
+    },
     storeEvent: async () => {
       throw new Error("database offline");
     },
@@ -193,6 +240,28 @@ test("repository failure returns 503 and never ACKs early", async () => {
     error: "temporarily_unavailable",
     ok: false,
   });
+  assert.equal(scheduleWasCalled, false);
+});
+
+test("processor rejection cannot alter an accepted webhook ACK", async () => {
+  const sensitiveDetail = "customer payload leaked from processor";
+  let processorRejection: Promise<void> | undefined;
+  const response = await handleWhatsappWebhook(requestFor(VALID_JSON), {
+    scheduleProcessing: () => {
+      processorRejection = Promise.reject(new Error(sensitiveDetail)).catch(
+        () => undefined,
+      );
+    },
+    storeEvent: async () => ({
+      eventId: crypto.randomUUID(),
+      outcome: "accepted",
+    }),
+    verifySignature: verifier,
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { duplicate: false, ok: true });
+  await processorRejection;
 });
 
 test("error responses do not reflect secrets, signatures, or raw bodies", async () => {

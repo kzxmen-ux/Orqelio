@@ -6,6 +6,7 @@ interface WhatsappWebhookStoreResult {
 }
 
 interface WhatsappWebhookHandlerDependencies {
+  scheduleProcessing?: (eventId: string) => void;
   storeEvent: (
     payload: Record<string, unknown>,
   ) => Promise<WhatsappWebhookStoreResult>;
@@ -136,6 +137,12 @@ export async function handleWhatsappWebhook(
 
   try {
     const result = await dependencies.storeEvent(payload);
+
+    try {
+      dependencies.scheduleProcessing?.(result.eventId);
+    } catch {
+      // Persistence succeeded, so dispatch registration must not change the ACK.
+    }
 
     return jsonResponse(
       { duplicate: result.outcome === "duplicate", ok: true },
