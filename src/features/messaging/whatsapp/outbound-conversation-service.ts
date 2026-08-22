@@ -3,17 +3,29 @@ import "server-only";
 import { createPrivilegedClient } from "@/lib/supabase/privileged";
 
 import {
-  sendWhatsappConversationTextWithDependencies,
+  recoverWhatsappOutboundDispatchWithDependencies,
+  sendWhatsappConversationTextDurablyWithDependencies,
+  type RecoverWhatsappOutboundDispatchInput,
+  type WhatsappDurableOutboundConversationResult,
   type WhatsappOutboundConversationInput,
-  type WhatsappOutboundConversationResult,
 } from "./outbound-conversation-service-core";
-import { storeWhatsappOutboundMessage } from "./outbound-message-repository";
+import {
+  finalizeWhatsappOutboundDispatch,
+  getWhatsappOutboundDispatchRecoveryState,
+  markWhatsappOutboundDispatchIndeterminate,
+  markWhatsappOutboundDispatching,
+  prepareWhatsappOutboundDispatch,
+  recordWhatsappOutboundProviderAcceptance,
+} from "./outbound-dispatch-repository";
 import { sendWhatsappTextMessage } from "./outbound-text-sender";
+
+const waitBeforeDatabaseRetry = (attempt: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, attempt * 50));
 
 export function sendWhatsappConversationText(
   input: WhatsappOutboundConversationInput,
-): Promise<WhatsappOutboundConversationResult> {
-  return sendWhatsappConversationTextWithDependencies(input, {
+): Promise<WhatsappDurableOutboundConversationResult> {
+  return sendWhatsappConversationTextDurablyWithDependencies(input, {
     lookupConversation: async (validatedInput) => {
       const supabase = createPrivilegedClient();
       const { data, error } = await supabase
@@ -38,7 +50,23 @@ export function sendWhatsappConversationText(
 
       return { data, error };
     },
+    finalizeDispatch: finalizeWhatsappOutboundDispatch,
+    markDispatching: markWhatsappOutboundDispatching,
+    markIndeterminate: markWhatsappOutboundDispatchIndeterminate,
+    prepareDispatch: prepareWhatsappOutboundDispatch,
+    recordProviderAcceptance: recordWhatsappOutboundProviderAcceptance,
     sendTextMessage: sendWhatsappTextMessage,
-    storeOutboundMessage: storeWhatsappOutboundMessage,
+    waitBeforeRetry: waitBeforeDatabaseRetry,
+  });
+}
+
+export function recoverWhatsappOutboundDispatch(
+  input: RecoverWhatsappOutboundDispatchInput,
+): Promise<WhatsappDurableOutboundConversationResult> {
+  return recoverWhatsappOutboundDispatchWithDependencies(input, {
+    finalizeDispatch: finalizeWhatsappOutboundDispatch,
+    getRecoveryState: getWhatsappOutboundDispatchRecoveryState,
+    recordProviderAcceptance: recordWhatsappOutboundProviderAcceptance,
+    waitBeforeRetry: waitBeforeDatabaseRetry,
   });
 }
