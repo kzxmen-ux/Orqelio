@@ -83,3 +83,10 @@ export function getMetaAppSecret(): string {
     process.env.META_APP_SECRET,
   );
 }
+
+export function getMetaSystemUserToken(): string {
+  return getRequiredServerSecret(
+    "Meta WhatsApp outbound access",
+    process.env.META_SYSTEM_USER_TOKEN,
+  );
+}
