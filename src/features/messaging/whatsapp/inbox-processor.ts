@@ -11,18 +11,27 @@ import {
   type WhatsappInboxProcessorResult,
 } from "./inbox-processor-core";
 import { storeRoutedWhatsappInboundMessage } from "./inbound-message-repository";
+import { applyWhatsappDeliveryStatus } from "./delivery-status-repository";
+import {
+  routeWhatsappDeliveryStatuses,
+  type RoutedWhatsappDeliveryStatus,
+} from "./delivery-status-routing";
 import {
   routeWhatsappInboundMessages,
   type RoutedWhatsappInboundMessage,
 } from "./inbound-routing";
 
-const dependencies: WhatsappInboxProcessorDependencies<RoutedWhatsappInboundMessage> =
-  {
+const dependencies: WhatsappInboxProcessorDependencies<
+  RoutedWhatsappInboundMessage,
+  RoutedWhatsappDeliveryStatus
+> = {
     claimEvent: claimWhatsappWebhookEvent,
     completeEvent: completeWhatsappWebhookEvent,
     failEvent: failWhatsappWebhookEvent,
     routePayload: routeWhatsappInboundMessages,
+    routeStatuses: routeWhatsappDeliveryStatuses,
     storeMessage: storeRoutedWhatsappInboundMessage,
+    storeStatus: applyWhatsappDeliveryStatus,
   };
 
 export function processWhatsappInboxEvent(

@@ -3,11 +3,15 @@ export type WhatsappInboxProcessorResult =
       outcome: "processed";
       routedMessageCount: number;
       storedMessageCount: number;
+      routedStatusCount: number;
+      storedStatusCount: number;
     }
   | {
       outcome: "unavailable";
       routedMessageCount: 0;
       storedMessageCount: 0;
+      routedStatusCount: 0;
+      storedStatusCount: 0;
     };
 
 type ClaimResult =
@@ -23,10 +27,12 @@ type StoreResult = {
   outcome: "accepted" | "duplicate";
 };
 
-export type WhatsappInboxProcessorDependencies<TMessage> = {
+export type WhatsappInboxProcessorDependencies<TMessage, TStatus> = {
   claimEvent: (eventId: string) => Promise<ClaimResult>;
   routePayload: (payload: unknown) => Promise<readonly TMessage[]>;
+  routeStatuses: (payload: unknown) => Promise<readonly TStatus[]>;
   storeMessage: (message: TMessage) => Promise<StoreResult>;
+  storeStatus: (status: TStatus) => Promise<unknown>;
   completeEvent: (eventId: string) => Promise<unknown>;
   failEvent: (eventId: string, errorCode: string) => Promise<unknown>;
 };
@@ -37,8 +43,12 @@ function processorFailure(): Error {
 
 async function markFailed(
   eventId: string,
-  errorCode: "routing_failed" | "message_storage_failed",
-  failEvent: WhatsappInboxProcessorDependencies<unknown>["failEvent"],
+  errorCode:
+    | "routing_failed"
+    | "message_storage_failed"
+    | "status_routing_failed"
+    | "status_storage_failed",
+  failEvent: WhatsappInboxProcessorDependencies<unknown, unknown>["failEvent"],
 ): Promise<never> {
   try {
     await failEvent(eventId, errorCode);
@@ -49,9 +59,12 @@ async function markFailed(
   throw processorFailure();
 }
 
-export async function processWhatsappInboxEventWithDependencies<TMessage>(
+export async function processWhatsappInboxEventWithDependencies<
+  TMessage,
+  TStatus,
+>(
   eventId: string,
-  dependencies: WhatsappInboxProcessorDependencies<TMessage>,
+  dependencies: WhatsappInboxProcessorDependencies<TMessage, TStatus>,
 ): Promise<WhatsappInboxProcessorResult> {
   let claim: ClaimResult;
 
@@ -66,6 +79,8 @@ export async function processWhatsappInboxEventWithDependencies<TMessage>(
       outcome: "unavailable",
       routedMessageCount: 0,
       storedMessageCount: 0,
+      routedStatusCount: 0,
+      storedStatusCount: 0,
     };
   }
 
@@ -75,6 +90,18 @@ export async function processWhatsappInboxEventWithDependencies<TMessage>(
     messages = await dependencies.routePayload(claim.rawPayload);
   } catch {
     return markFailed(eventId, "routing_failed", dependencies.failEvent);
+  }
+
+  let statuses: readonly TStatus[];
+
+  try {
+    statuses = await dependencies.routeStatuses(claim.rawPayload);
+  } catch {
+    return markFailed(
+      eventId,
+      "status_routing_failed",
+      dependencies.failEvent,
+    );
   }
 
   let storedMessageCount = 0;
@@ -92,6 +119,21 @@ export async function processWhatsappInboxEventWithDependencies<TMessage>(
     }
   }
 
+  let storedStatusCount = 0;
+
+  for (const status of statuses) {
+    try {
+      await dependencies.storeStatus(status);
+      storedStatusCount += 1;
+    } catch {
+      return markFailed(
+        eventId,
+        "status_storage_failed",
+        dependencies.failEvent,
+      );
+    }
+  }
+
   try {
     await dependencies.completeEvent(eventId);
   } catch {
@@ -102,5 +144,7 @@ export async function processWhatsappInboxEventWithDependencies<TMessage>(
     outcome: "processed",
     routedMessageCount: messages.length,
     storedMessageCount,
+    routedStatusCount: statuses.length,
+    storedStatusCount,
   };
 }

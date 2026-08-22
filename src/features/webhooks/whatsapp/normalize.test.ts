@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { normalizeWhatsappInboundMessages } from "./normalize.ts";
+import {
+  normalizeWhatsappDeliveryStatuses,
+  normalizeWhatsappInboundMessages,
+} from "./normalize.ts";
 
 const MESSAGE_ID = "fixture-message-id";
 const PHONE_NUMBER_ID = "fixture-phone-number-id";
 const SENDER_ID = "fixture-sender-id";
 const TIMESTAMP = "1700000000";
 const WABA_ID = "fixture-waba-id";
+const STATUS_PHONE_NUMBER_ID = "123456789";
+const STATUS_WABA_ID = "987654321";
 
 function textMessage(
   overrides: Record<string, unknown> = {},
@@ -49,6 +54,40 @@ function payloadWith(
   ],
 ): Record<string, unknown> {
   return { entry: entries, object: "whatsapp_business_account" };
+}
+
+function statusPayload(statuses: unknown[]): Record<string, unknown> {
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messaging_product: "whatsapp",
+              metadata: { phone_number_id: STATUS_PHONE_NUMBER_ID },
+              statuses,
+            },
+          },
+        ],
+        id: STATUS_WABA_ID,
+      },
+    ],
+    object: "whatsapp_business_account",
+  };
+}
+
+function deliveryStatus(
+  status: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: "wamid.fixture-provider-message",
+    recipient_id: "must-not-be-normalized",
+    status,
+    timestamp: "1700000000",
+    ...overrides,
+  };
 }
 
 test("normalizes one inbound text message with required Meta identifiers", () => {
@@ -298,4 +337,90 @@ test("preserves customer text exactly, including whitespace and empty text", () 
       { messageId: "fixture-empty", text: "" },
     ],
   );
+});
+
+for (const status of ["sent", "delivered", "read", "failed"] as const) {
+  test(`normalizes a valid ${status} delivery status`, () => {
+    assert.deepEqual(
+      normalizeWhatsappDeliveryStatuses(
+        statusPayload([deliveryStatus(status)]),
+      ),
+      [
+        {
+          phoneNumberId: STATUS_PHONE_NUMBER_ID,
+          providerMessageId: "wamid.fixture-provider-message",
+          status,
+          timestamp: "1700000000",
+          wabaId: STATUS_WABA_ID,
+        },
+      ],
+    );
+  });
+}
+
+test("normalizes multiple delivery statuses in payload order", () => {
+  const result = normalizeWhatsappDeliveryStatuses(
+    statusPayload([
+      deliveryStatus("sent", { id: "wamid.first" }),
+      deliveryStatus("delivered", { id: "wamid.second" }),
+      deliveryStatus("read", { id: "wamid.third" }),
+    ]),
+  );
+
+  assert.deepEqual(
+    result.map(({ providerMessageId, status }) => ({
+      providerMessageId,
+      status,
+    })),
+    [
+      { providerMessageId: "wamid.first", status: "sent" },
+      { providerMessageId: "wamid.second", status: "delivered" },
+      { providerMessageId: "wamid.third", status: "read" },
+    ],
+  );
+});
+
+test("skips malformed and unsupported delivery statuses", () => {
+  const result = normalizeWhatsappDeliveryStatuses(
+    statusPayload([
+      deliveryStatus("sent", { id: "" }),
+      deliveryStatus("sent", { timestamp: "not-a-timestamp" }),
+      deliveryStatus("accepted"),
+      deliveryStatus("delivered", { id: "wamid.valid" }),
+    ]),
+  );
+
+  assert.deepEqual(result.map(({ providerMessageId }) => providerMessageId), [
+    "wamid.valid",
+  ]);
+});
+
+test("deduplicates identical delivery status events", () => {
+  const status = deliveryStatus("sent");
+  const result = normalizeWhatsappDeliveryStatuses(
+    statusPayload([status, status]),
+  );
+
+  assert.equal(result.length, 1);
+});
+
+test("does not normalize recipient, pricing, conversation, or error details", () => {
+  const result = normalizeWhatsappDeliveryStatuses(
+    statusPayload([
+      deliveryStatus("failed", {
+        conversation: { id: "private-conversation" },
+        errors: [{ message: "private provider error" }],
+        pricing: { category: "private-pricing" },
+      }),
+    ]),
+  );
+
+  assert.equal(result.length, 1);
+  assert.deepEqual(Object.keys(result[0] ?? {}).sort(), [
+    "phoneNumberId",
+    "providerMessageId",
+    "status",
+    "timestamp",
+    "wabaId",
+  ]);
 });

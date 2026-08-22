@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { applyWhatsappDeliveryStatusWithRpc } from "./delivery-status-repository-core.ts";
+import { routeWhatsappDeliveryStatusesWithResolver } from "./delivery-status-routing-core.ts";
 import {
   processWhatsappInboxEventWithDependencies,
   type WhatsappInboxProcessorDependencies,
@@ -10,20 +13,63 @@ type TestMessage = {
   id: string;
 };
 
+type TestStatus = {
+  id: string;
+};
+
 const EVENT_ID = "27c85dd2-d2f5-4e28-a1f0-b970643c3115";
 const RAW_PAYLOAD = { object: "whatsapp_business_account", entry: [] };
 const SAFE_PROCESSOR_ERROR = /^Error: WhatsApp inbox processor failed\.$/;
+const MIGRATION_URL = new URL(
+  "../../../../supabase/migrations/20260822202836_whatsapp_outbound_delivery_status.sql",
+  import.meta.url,
+);
+const MIGRATION_SQL = (await readFile(MIGRATION_URL, "utf8"))
+  .replace(/\s+/g, " ")
+  .toLowerCase();
+
+function statusPayload(): Record<string, unknown> {
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messaging_product: "whatsapp",
+              metadata: { phone_number_id: "123456789" },
+              statuses: [
+                {
+                  id: "wamid.delivery-status",
+                  recipient_id: "must-not-route-tenant",
+                  status: "delivered",
+                  timestamp: "1700000000",
+                },
+              ],
+            },
+          },
+        ],
+        id: "987654321",
+      },
+    ],
+    object: "whatsapp_business_account",
+  };
+}
 
 function createDependencies(
-  overrides: Partial<WhatsappInboxProcessorDependencies<TestMessage>> = {},
-): WhatsappInboxProcessorDependencies<TestMessage> {
+  overrides: Partial<
+    WhatsappInboxProcessorDependencies<TestMessage, TestStatus>
+  > = {},
+): WhatsappInboxProcessorDependencies<TestMessage, TestStatus> {
   return {
     claimEvent: async () => ({
       outcome: "claimed",
       rawPayload: RAW_PAYLOAD,
     }),
     routePayload: async () => [],
+    routeStatuses: async () => [],
     storeMessage: async () => ({ outcome: "accepted" }),
+    storeStatus: async () => ({ outcome: "updated" }),
     completeEvent: async () => undefined,
     failEvent: async () => undefined,
     ...overrides,
@@ -53,6 +99,8 @@ test("processes a claimed event", async () => {
       outcome: "processed",
       routedMessageCount: 1,
       storedMessageCount: 1,
+      routedStatusCount: 0,
+      storedStatusCount: 0,
     },
   );
   assert.equal(completedEventId, EVENT_ID);
@@ -77,6 +125,8 @@ test("returns unavailable without routing or completing", async () => {
       outcome: "unavailable",
       routedMessageCount: 0,
       storedMessageCount: 0,
+      routedStatusCount: 0,
+      storedStatusCount: 0,
     },
   );
   assert.equal(downstreamCallCount, 0);
@@ -96,6 +146,8 @@ test("completes an event with zero routed messages", async () => {
       outcome: "processed",
       routedMessageCount: 0,
       storedMessageCount: 0,
+      routedStatusCount: 0,
+      storedStatusCount: 0,
     },
   );
   assert.equal(completed, true);
@@ -143,6 +195,8 @@ test("counts duplicate message persistence as success", async () => {
       outcome: "processed",
       routedMessageCount: 1,
       storedMessageCount: 1,
+      routedStatusCount: 0,
+      storedStatusCount: 0,
     },
   );
 });
@@ -262,5 +316,326 @@ test("does not leak sensitive dependency error details", async () => {
       assert.equal(error.message.includes(sensitiveDetail), false);
       return true;
     },
+  );
+});
+
+test("routes a delivery status through the exact active connection pair", async () => {
+  const resolverInputs: unknown[] = [];
+  const result = await routeWhatsappDeliveryStatusesWithResolver(
+    statusPayload(),
+    async (input) => {
+      resolverInputs.push(input);
+      return {
+        connectionId: "33333333-3333-4333-8333-333333333333",
+        organizationId: "11111111-1111-4111-8111-111111111111",
+      };
+    },
+  );
+
+  assert.deepEqual(resolverInputs, [
+    { phoneNumberId: "123456789", wabaId: "987654321" },
+  ]);
+  assert.deepEqual(result, [
+    {
+      connectionId: "33333333-3333-4333-8333-333333333333",
+      organizationId: "11111111-1111-4111-8111-111111111111",
+      providerMessageId: "wamid.delivery-status",
+      providerTimestamp: "2023-11-14T22:13:20.000Z",
+      status: "delivered",
+    },
+  ]);
+  assert.equal(JSON.stringify(resolverInputs).includes("recipient"), false);
+});
+
+test("skips a status without an active mapped connection", async () => {
+  assert.deepEqual(
+    await routeWhatsappDeliveryStatusesWithResolver(
+      statusPayload(),
+      async () => null,
+    ),
+    [],
+  );
+});
+
+test("delivery status repository calls only the tenant-safe RPC", async () => {
+  const calls: unknown[] = [];
+  const result = await applyWhatsappDeliveryStatusWithRpc(
+    {
+      connectionId: "33333333-3333-4333-8333-333333333333",
+      organizationId: "11111111-1111-4111-8111-111111111111",
+      providerMessageId: "wamid.delivery-status",
+      providerTimestamp: "2023-11-14T22:13:20.000Z",
+      status: "delivered",
+    },
+    async (functionName, parameters) => {
+      calls.push({ functionName, parameters });
+      return {
+        data: [
+          {
+            delivery_status: "delivered",
+            message_id: "44444444-4444-4444-8444-444444444444",
+            outcome: "updated",
+          },
+        ],
+        error: null,
+      };
+    },
+  );
+
+  assert.deepEqual(result, {
+    deliveryStatus: "delivered",
+    messageId: "44444444-4444-4444-8444-444444444444",
+    outcome: "updated",
+  });
+  assert.deepEqual(calls, [
+    {
+      functionName: "apply_whatsapp_outbound_delivery_status",
+      parameters: {
+        p_connection_id: "33333333-3333-4333-8333-333333333333",
+        p_organization_id: "11111111-1111-4111-8111-111111111111",
+        p_provider_message_id: "wamid.delivery-status",
+        p_provider_status: "delivered",
+        p_provider_timestamp: "2023-11-14T22:13:20.000Z",
+      },
+    },
+  ]);
+});
+
+test("delivery status repository fails safely without database details", async () => {
+  const sensitive = "private database row and provider routing values";
+  let thrown: unknown;
+
+  try {
+    await applyWhatsappDeliveryStatusWithRpc(
+      {
+        connectionId: "33333333-3333-4333-8333-333333333333",
+        organizationId: "11111111-1111-4111-8111-111111111111",
+        providerMessageId: "wamid.delivery-status",
+        providerTimestamp: "2023-11-14T22:13:20.000Z",
+        status: "failed",
+      },
+      async () => ({ data: null, error: { message: sensitive } }),
+    );
+  } catch (error) {
+    thrown = error;
+  }
+
+  assert.ok(thrown instanceof Error);
+  assert.equal(
+    thrown.message,
+    "WhatsApp delivery status repository operation failed.",
+  );
+  assert.equal(thrown.message.includes(sensitive), false);
+});
+
+test("invalid delivery status input is rejected before the RPC", async () => {
+  let rpcCalls = 0;
+
+  await assert.rejects(
+    applyWhatsappDeliveryStatusWithRpc(
+      {
+        connectionId: "not-a-uuid",
+        organizationId: "11111111-1111-4111-8111-111111111111",
+        providerMessageId: "wamid.delivery-status",
+        providerTimestamp: "2023-11-14T22:13:20.000Z",
+        status: "sent",
+      },
+      async () => {
+        rpcCalls += 1;
+        return { data: null, error: null };
+      },
+    ),
+    /^Error: WhatsApp delivery status repository operation failed\.$/,
+  );
+  assert.equal(rpcCalls, 0);
+});
+
+test("duplicate delivery status persistence is normalized as success", async () => {
+  assert.deepEqual(
+    await applyWhatsappDeliveryStatusWithRpc(
+      {
+        connectionId: "33333333-3333-4333-8333-333333333333",
+        organizationId: "11111111-1111-4111-8111-111111111111",
+        providerMessageId: "wamid.delivery-status",
+        providerTimestamp: "2023-11-14T22:13:20.000Z",
+        status: "sent",
+      },
+      async () => ({
+        data: [
+          {
+            delivery_status: "sent",
+            message_id: "44444444-4444-4444-8444-444444444444",
+            outcome: "duplicate",
+          },
+        ],
+        error: null,
+      }),
+    ),
+    {
+      deliveryStatus: "sent",
+      messageId: "44444444-4444-4444-8444-444444444444",
+      outcome: "duplicate",
+    },
+  );
+});
+
+test("status-only webhook is stored before the inbox event completes", async () => {
+  const operations: string[] = [];
+  const status = { id: "status-only" };
+  const dependencies = createDependencies({
+    routeStatuses: async () => [status],
+    storeStatus: async (receivedStatus) => {
+      assert.equal(receivedStatus, status);
+      operations.push("status");
+      return { outcome: "updated" };
+    },
+    completeEvent: async () => {
+      operations.push("complete");
+    },
+  });
+
+  assert.deepEqual(
+    await processWhatsappInboxEventWithDependencies(EVENT_ID, dependencies),
+    {
+      outcome: "processed",
+      routedMessageCount: 0,
+      storedMessageCount: 0,
+      routedStatusCount: 1,
+      storedStatusCount: 1,
+    },
+  );
+  assert.deepEqual(operations, ["status", "complete"]);
+});
+
+test("mixed webhook completes only after message and status stores", async () => {
+  const operations: string[] = [];
+  const dependencies = createDependencies({
+    routePayload: async () => [{ id: "message" }],
+    routeStatuses: async () => [{ id: "status" }],
+    storeMessage: async () => {
+      operations.push("message");
+      return { outcome: "accepted" };
+    },
+    storeStatus: async () => {
+      operations.push("status");
+      return { outcome: "updated" };
+    },
+    completeEvent: async () => {
+      operations.push("complete");
+    },
+  });
+
+  await processWhatsappInboxEventWithDependencies(EVENT_ID, dependencies);
+  assert.deepEqual(operations, ["message", "status", "complete"]);
+});
+
+test("status storage failure marks the inbox event failed safely", async () => {
+  const sensitive = "raw provider failure and customer identifiers";
+  const failCalls: Array<[string, string]> = [];
+  const dependencies = createDependencies({
+    routeStatuses: async () => [{ id: "status" }],
+    storeStatus: async () => {
+      throw new Error(sensitive);
+    },
+    failEvent: async (eventId, errorCode) => {
+      failCalls.push([eventId, errorCode]);
+    },
+  });
+
+  await assert.rejects(
+    processWhatsappInboxEventWithDependencies(EVENT_ID, dependencies),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, "WhatsApp inbox processor failed.");
+      assert.equal(error.message.includes(sensitive), false);
+      return true;
+    },
+  );
+  assert.deepEqual(failCalls, [[EVENT_ID, "status_storage_failed"]]);
+});
+
+test("status routing failure marks the inbox event failed safely", async () => {
+  const sensitive = "private routing identifiers";
+  const failCalls: Array<[string, string]> = [];
+  const dependencies = createDependencies({
+    routeStatuses: async () => {
+      throw new Error(sensitive);
+    },
+    failEvent: async (eventId, errorCode) => {
+      failCalls.push([eventId, errorCode]);
+    },
+  });
+
+  await assert.rejects(
+    processWhatsappInboxEventWithDependencies(EVENT_ID, dependencies),
+    SAFE_PROCESSOR_ERROR,
+  );
+  assert.deepEqual(failCalls, [[EVENT_ID, "status_routing_failed"]]);
+});
+
+test("delivery migration adds outbound-only lifecycle timestamps", () => {
+  assert.match(
+    MIGRATION_SQL,
+    /add column sent_at timestamptz, add column delivered_at timestamptz, add column read_at timestamptz, add column failed_at timestamptz/,
+  );
+  assert.match(
+    MIGRATION_SQL,
+    /direction = 'outbound' or \( sent_at is null and delivered_at is null and read_at is null and failed_at is null \)/,
+  );
+});
+
+test("delivery migration locks and verifies the exact outbound tenant identity", () => {
+  assert.match(MIGRATION_SQL, /for update of message/);
+  assert.match(MIGRATION_SQL, /message\.organization_id = p_organization_id/);
+  assert.match(MIGRATION_SQL, /message\.channel = 'whatsapp'/);
+  assert.match(MIGRATION_SQL, /message\.direction = 'outbound'/);
+  assert.match(
+    MIGRATION_SQL,
+    /message\.provider_message_id = p_provider_message_id/,
+  );
+  assert.match(
+    MIGRATION_SQL,
+    /conversation\.channel_connection_id = p_connection_id/,
+  );
+  assert.match(MIGRATION_SQL, /connection\.status = 'active'/);
+  assert.match(
+    MIGRATION_SQL,
+    /raise exception 'whatsapp outbound delivery status target is unavailable'/,
+  );
+});
+
+test("delivery migration stores earliest milestones without status regression", () => {
+  for (const milestone of ["sent", "delivered", "read", "failed"]) {
+    assert.match(
+      MIGRATION_SQL,
+      new RegExp(`least\\(current_${milestone}_at, p_provider_timestamp\\)`),
+    );
+  }
+
+  assert.match(
+    MIGRATION_SQL,
+    /when next_read_at is not null then 'read' when next_delivered_at is not null then 'delivered' when next_failed_at is not null then 'failed' when next_sent_at is not null then 'sent' else 'accepted'/,
+  );
+  assert.match(
+    MIGRATION_SQL,
+    /if not milestone_changed and next_delivery_status = current_delivery_status then return query select 'duplicate'::text/,
+  );
+});
+
+test("delivery RPC is executable only by service_role", () => {
+  const signature =
+    "public.apply_whatsapp_outbound_delivery_status( uuid, uuid, text, text, timestamptz )";
+
+  assert.ok(
+    MIGRATION_SQL.includes(
+      `revoke all on function ${signature} from public, anon, authenticated`,
+    ),
+  );
+  assert.ok(
+    MIGRATION_SQL.includes(`grant execute on function ${signature} to service_role`),
+  );
+  assert.match(
+    MIGRATION_SQL,
+    /grant update \( sent_at, delivered_at, read_at, failed_at, delivery_status \) on public\.messages to service_role/,
   );
 });
