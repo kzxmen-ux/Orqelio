@@ -73,6 +73,17 @@ test("rejects wrong tenant, conversation, or connection identity", () => {
   );
 });
 
+test("rejects suspended and disconnected WhatsApp connections", () => {
+  assert.match(
+    sql,
+    /connection\.organization_id = p_organization_id and connection\.status = 'active'/,
+  );
+  assert.match(
+    sql,
+    /connection\.status = 'active'; if not found then raise exception 'whatsapp outbound conversation is unavailable'/,
+  );
+});
+
 test("makes provider message persistence idempotent and rejects conflicts", () => {
   assert.match(sql, /pg_catalog\.pg_advisory_xact_lock\(/);
   assert.match(sql, /message\.provider_message_id = p_provider_message_id/);

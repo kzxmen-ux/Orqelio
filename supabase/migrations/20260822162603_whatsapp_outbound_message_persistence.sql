@@ -92,7 +92,8 @@ begin
     and conversation.organization_id = p_organization_id
     and conversation.channel = 'whatsapp'
     and conversation.channel_connection_id = p_connection_id
-    and connection.organization_id = p_organization_id;
+    and connection.organization_id = p_organization_id
+    and connection.status = 'active';
 
   if not found then
     raise exception 'WhatsApp outbound conversation is unavailable'
