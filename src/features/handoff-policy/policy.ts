@@ -38,7 +38,7 @@ const SAFE_REASONS: Record<HandoffReasonCode, string> = {
 
 export function buildHandoffPolicy(
   organizationId: string,
-  configuration: AiManagerConfiguration | null,
+  configuration: Pick<AiManagerConfiguration, "handoff" | "version"> | null,
 ): HandoffPolicy {
   const organizationRules: Readonly<HandoffOrganizationRules> = configuration
     ? {
