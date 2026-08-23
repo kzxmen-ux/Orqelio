@@ -90,3 +90,10 @@ export function getMetaSystemUserToken(): string {
     process.env.META_SYSTEM_USER_TOKEN,
   );
 }
+
+export function getCronSecret(): string {
+  return getRequiredServerSecret(
+    "Internal cron authentication",
+    process.env.CRON_SECRET,
+  );
+}
