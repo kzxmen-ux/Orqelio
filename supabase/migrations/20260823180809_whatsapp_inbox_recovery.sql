@@ -169,6 +169,30 @@ begin
   where inbox.processing_status = 'processing'
     and inbox.processing_started_at <= recovery_time - interval '10 minutes';
 
+  update webhook_private.whatsapp_webhook_inbox as inbox
+  set
+    processing_status = case
+      when inbox.attempt_count < 5 then 'pending'
+      else 'failed'
+    end,
+    processing_started_at = null,
+    processed_at = case
+      when inbox.attempt_count < 5 then null
+      else inbox.processed_at
+    end,
+    error_code = case
+      when inbox.attempt_count < 5 then null
+      else 'recovery_attempts_exhausted'
+    end
+  where inbox.processing_status = 'failed'
+    and inbox.error_code in (
+      'routing_failed',
+      'message_storage_failed',
+      'status_routing_failed',
+      'status_storage_failed'
+    )
+    and inbox.processed_at <= recovery_time - interval '1 minute';
+
   return query
   select inbox.id
   from webhook_private.whatsapp_webhook_inbox as inbox
@@ -308,4 +332,4 @@ comment on column webhook_private.whatsapp_webhook_inbox.attempt_count
 is 'Number of successful pending-to-processing claims.';
 
 comment on function public.recover_whatsapp_webhook_inbox(integer)
-is 'Requeues stale WhatsApp inbox events, exhausts repeated attempts, and returns only eligible event IDs.';
+is 'Requeues stale or retryable failed WhatsApp inbox events, exhausts repeated attempts, and returns only eligible event IDs.';

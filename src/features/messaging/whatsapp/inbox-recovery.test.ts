@@ -12,6 +12,23 @@ import { createWhatsappInboxRecoveryGetHandler } from "../../../app/api/internal
 const EVENT_ONE = "11111111-1111-4111-8111-111111111111";
 const EVENT_TWO = "22222222-2222-4222-8222-222222222222";
 const EVENT_THREE = "33333333-3333-4333-8333-333333333333";
+const RECOVERY_MIGRATION_URL = new URL(
+  "../../../../supabase/migrations/20260823180809_whatsapp_inbox_recovery.sql",
+  import.meta.url,
+);
+
+async function readRecoveryMigration(): Promise<string> {
+  return readFile(RECOVERY_MIGRATION_URL, "utf8");
+}
+
+function requireRecoveryFunction(migration: string): string {
+  const recoveryFunction = migration.match(
+    /create function webhook_private\.recover_whatsapp_webhook_inbox_internal\([\s\S]*?\n\$\$;/,
+  )?.[0];
+
+  assert.ok(recoveryFunction);
+  return recoveryFunction;
+}
 
 test("recovery RPC returns validated candidates and bounds the requested limit", async () => {
   const calls: Array<{ functionName: string; limit: number }> = [];
@@ -227,13 +244,7 @@ test("recovery route hides missing configuration and internal failures", async (
 });
 
 test("migration defines bounded durable lifecycle recovery and narrow grants", async () => {
-  const migration = await readFile(
-    new URL(
-      "../../../../supabase/migrations/20260823180809_whatsapp_inbox_recovery.sql",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const migration = await readRecoveryMigration();
 
   assert.match(migration, /add column processing_started_at timestamptz/);
   assert.match(
@@ -282,6 +293,109 @@ test("migration defines bounded durable lifecycle recovery and narrow grants", a
     migration,
     /grant execute[\s\S]*public\.recover_whatsapp_webhook_inbox\(integer\)[\s\S]*to service_role/,
   );
+});
+
+test("migration requeues only the four known processor failures after one minute", async () => {
+  const recoveryFunction = requireRecoveryFunction(
+    await readRecoveryMigration(),
+  );
+  const retryableFailureCodes = [
+    "routing_failed",
+    "message_storage_failed",
+    "status_routing_failed",
+    "status_storage_failed",
+  ] as const;
+
+  assert.match(
+    recoveryFunction,
+    /where inbox\.processing_status = 'failed'/,
+  );
+  assert.match(
+    recoveryFunction,
+    /inbox\.processed_at <= recovery_time - interval '1 minute'/,
+  );
+  assert.match(
+    recoveryFunction,
+    /when inbox\.attempt_count < 5 then 'pending'/,
+  );
+  assert.match(
+    recoveryFunction,
+    /when inbox\.attempt_count < 5 then null[\s\S]*else inbox\.processed_at/,
+  );
+
+  for (const errorCode of retryableFailureCodes) {
+    assert.match(recoveryFunction, new RegExp(`'${errorCode}'`));
+  }
+
+  const retryableCodeList = recoveryFunction.match(
+    /inbox\.error_code in \(([\s\S]*?)\)/,
+  )?.[1];
+  assert.ok(retryableCodeList);
+  assert.deepEqual(
+    [...retryableCodeList.matchAll(/'([^']+)'/g)].map((match) => match[1]),
+    retryableFailureCodes,
+  );
+});
+
+test("migration leaves young and unknown failures untouched", async () => {
+  const recoveryFunction = requireRecoveryFunction(
+    await readRecoveryMigration(),
+  );
+  const failedRecoveryPredicate = recoveryFunction.match(
+    /where inbox\.processing_status = 'failed'[\s\S]*?interval '1 minute';/,
+  )?.[0];
+
+  assert.ok(failedRecoveryPredicate);
+  assert.match(
+    failedRecoveryPredicate,
+    /inbox\.error_code in \([\s\S]*'status_storage_failed'[\s\S]*\)/,
+  );
+  assert.match(
+    failedRecoveryPredicate,
+    /inbox\.processed_at <= recovery_time - interval '1 minute'/,
+  );
+  assert.doesNotMatch(failedRecoveryPredicate, /unknown_failed/);
+  assert.doesNotMatch(failedRecoveryPredicate, /recovery_attempts_exhausted/);
+});
+
+test("migration exhausts the fifth attempt and never requeues exhaustion", async () => {
+  const recoveryFunction = requireRecoveryFunction(
+    await readRecoveryMigration(),
+  );
+  const retryableCodeList = recoveryFunction.match(
+    /inbox\.error_code in \(([\s\S]*?)\)/,
+  )?.[1];
+
+  assert.ok(retryableCodeList);
+  assert.match(
+    recoveryFunction,
+    /when inbox\.attempt_count < 5 then 'pending'[\s\S]*else 'failed'/,
+  );
+  assert.match(
+    recoveryFunction,
+    /when inbox\.attempt_count < 5 then null[\s\S]*else 'recovery_attempts_exhausted'/,
+  );
+  assert.doesNotMatch(retryableCodeList, /recovery_attempts_exhausted/);
+});
+
+test("requeued failures can be returned without exposing raw payload", async () => {
+  const migration = await readRecoveryMigration();
+  const recoveryFunction = requireRecoveryFunction(migration);
+  const publicRecoveryFunction = migration.match(
+    /create function public\.recover_whatsapp_webhook_inbox\([\s\S]*?\n\$\$;/,
+  )?.[0];
+
+  assert.ok(publicRecoveryFunction);
+  assert.match(
+    recoveryFunction,
+    /processing_status = case[\s\S]*then 'pending'[\s\S]*return query[\s\S]*where inbox\.processing_status = 'pending'/,
+  );
+  assert.match(
+    recoveryFunction,
+    /where inbox\.processing_status = 'processing'[\s\S]*processing_started_at <= recovery_time - interval '10 minutes'/,
+  );
+  assert.doesNotMatch(recoveryFunction, /raw_payload/);
+  assert.doesNotMatch(publicRecoveryFunction, /raw_payload/);
 });
 
 test("normal webhook route keeps the Next.js after dispatch path", async () => {
