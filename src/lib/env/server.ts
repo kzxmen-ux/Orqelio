@@ -1,5 +1,7 @@
 import "server-only";
 
+import { resolveOpenAiAiModel } from "./openai-core.ts";
+
 const ENCRYPTION_KEY_BYTES = 32;
 
 export function getSupabaseSecretKey(): string {
@@ -96,4 +98,15 @@ export function getCronSecret(): string {
     "Internal cron authentication",
     process.env.CRON_SECRET,
   );
+}
+
+export function getOpenAiApiKey(): string {
+  return getRequiredServerSecret(
+    "OpenAI API access",
+    process.env.OPENAI_API_KEY,
+  );
+}
+
+export function getOpenAiAiModel(): string {
+  return resolveOpenAiAiModel(process.env.OPENAI_AI_MODEL);
 }
