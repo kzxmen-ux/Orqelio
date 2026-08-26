@@ -11,6 +11,8 @@ import {
 
 type TestMessage = {
   id: string;
+  organizationId?: string;
+  type?: string;
 };
 
 type TestStatus = {
@@ -18,6 +20,9 @@ type TestStatus = {
 };
 
 const EVENT_ID = "27c85dd2-d2f5-4e28-a1f0-b970643c3115";
+const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
+const CONVERSATION_ID = "22222222-2222-4222-8222-222222222222";
+const MESSAGE_ID = "44444444-4444-4444-8444-444444444444";
 const RAW_PAYLOAD = { object: "whatsapp_business_account", entry: [] };
 const SAFE_PROCESSOR_ERROR = /^Error: WhatsApp inbox processor failed\.$/;
 const MIGRATION_URL = new URL(
@@ -68,8 +73,15 @@ function createDependencies(
     }),
     routePayload: async () => [],
     routeStatuses: async () => [],
-    storeMessage: async () => ({ outcome: "accepted" }),
+    storeMessage: async () => ({
+      conversationId: CONVERSATION_ID,
+      messageId: MESSAGE_ID,
+      outcome: "accepted",
+    }),
     storeStatus: async () => ({ outcome: "updated" }),
+    processAi: async () => {
+      throw new Error("Unexpected AI processing call.");
+    },
     completeEvent: async () => undefined,
     failEvent: async () => undefined,
     ...overrides,
@@ -86,7 +98,11 @@ test("processes a claimed event", async () => {
     },
     storeMessage: async (receivedMessage) => {
       assert.equal(receivedMessage, message);
-      return { outcome: "accepted" };
+      return {
+        conversationId: CONVERSATION_ID,
+        messageId: MESSAGE_ID,
+        outcome: "accepted",
+      };
     },
     completeEvent: async (eventId) => {
       completedEventId = eventId;
@@ -101,9 +117,158 @@ test("processes a claimed event", async () => {
       storedMessageCount: 1,
       routedStatusCount: 0,
       storedStatusCount: 0,
+      aiProcessingResults: [],
     },
   );
   assert.equal(completedEventId, EVENT_ID);
+});
+
+test("invokes AI exactly once after a newly persisted inbound text", async () => {
+  const operations: string[] = [];
+  const aiInputs: unknown[] = [];
+  const message = {
+    id: "message-1",
+    organizationId: ORGANIZATION_ID,
+    type: "text",
+  };
+  const dependencies = createDependencies({
+    routePayload: async () => [message],
+    storeMessage: async () => {
+      operations.push("store");
+      return {
+        conversationId: CONVERSATION_ID,
+        messageId: MESSAGE_ID,
+        outcome: "accepted",
+      };
+    },
+    processAi: async (input) => {
+      operations.push("ai");
+      aiInputs.push(input);
+      return {
+        outcome: "decided",
+        decision: { action: "reply", text: "Здравствуйте!" },
+      };
+    },
+    completeEvent: async () => {
+      operations.push("complete");
+    },
+  });
+
+  assert.deepEqual(
+    await processWhatsappInboxEventWithDependencies(EVENT_ID, dependencies),
+    {
+      outcome: "processed",
+      routedMessageCount: 1,
+      storedMessageCount: 1,
+      routedStatusCount: 0,
+      storedStatusCount: 0,
+      aiProcessingResults: [
+        {
+          outcome: "decided",
+          decision: { action: "reply", text: "Здравствуйте!" },
+        },
+      ],
+    },
+  );
+  assert.deepEqual(operations, ["store", "ai", "complete"]);
+  assert.deepEqual(aiInputs, [
+    {
+      organizationId: ORGANIZATION_ID,
+      conversationId: CONVERSATION_ID,
+      triggerMessageId: MESSAGE_ID,
+    },
+  ]);
+});
+
+test("does not invoke AI when inbound text persistence fails", async () => {
+  let aiCallCount = 0;
+  const dependencies = createDependencies({
+    routePayload: async () => [
+      { id: "fails", organizationId: ORGANIZATION_ID, type: "text" },
+    ],
+    storeMessage: async () => {
+      throw new Error("database details");
+    },
+    processAi: async () => {
+      aiCallCount += 1;
+      return { outcome: "failed", reason: "runtime_error" };
+    },
+  });
+
+  await assert.rejects(
+    processWhatsappInboxEventWithDependencies(EVENT_ID, dependencies),
+    SAFE_PROCESSOR_ERROR,
+  );
+  assert.equal(aiCallCount, 0);
+});
+
+test("does not invoke AI for an unsupported inbound message type", async () => {
+  let aiCallCount = 0;
+  const dependencies = createDependencies({
+    routePayload: async () => [
+      { id: "image", organizationId: ORGANIZATION_ID, type: "image" },
+    ],
+    processAi: async () => {
+      aiCallCount += 1;
+      return { outcome: "failed", reason: "runtime_error" };
+    },
+  });
+
+  const result = await processWhatsappInboxEventWithDependencies(
+    EVENT_ID,
+    dependencies,
+  );
+
+  assert.equal(aiCallCount, 0);
+  assert.deepEqual(result.aiProcessingResults, []);
+});
+
+test("keeps an AI failure explicit without failing the durable event", async () => {
+  let completed = false;
+  const dependencies = createDependencies({
+    routePayload: async () => [
+      { id: "text", organizationId: ORGANIZATION_ID, type: "text" },
+    ],
+    processAi: async () => ({ outcome: "failed", reason: "provider_error" }),
+    completeEvent: async () => {
+      completed = true;
+    },
+  });
+
+  const result = await processWhatsappInboxEventWithDependencies(
+    EVENT_ID,
+    dependencies,
+  );
+
+  assert.equal(completed, true);
+  assert.deepEqual(result.aiProcessingResults, [
+    { outcome: "failed", reason: "provider_error" },
+  ]);
+});
+
+test("isolates an unexpected AI exception after durable persistence", async () => {
+  let completed = false;
+  const dependencies = createDependencies({
+    routePayload: async () => [
+      { id: "text", organizationId: ORGANIZATION_ID, type: "text" },
+    ],
+    processAi: async () => {
+      throw new Error("sensitive model error");
+    },
+    completeEvent: async () => {
+      completed = true;
+    },
+  });
+
+  const result = await processWhatsappInboxEventWithDependencies(
+    EVENT_ID,
+    dependencies,
+  );
+
+  assert.equal(completed, true);
+  assert.deepEqual(result.aiProcessingResults, [
+    { outcome: "failed", reason: "runtime_error" },
+  ]);
 });
 
 test("returns unavailable without routing or completing", async () => {
@@ -127,6 +292,7 @@ test("returns unavailable without routing or completing", async () => {
       storedMessageCount: 0,
       routedStatusCount: 0,
       storedStatusCount: 0,
+      aiProcessingResults: [],
     },
   );
   assert.equal(downstreamCallCount, 0);
@@ -148,6 +314,7 @@ test("completes an event with zero routed messages", async () => {
       storedMessageCount: 0,
       routedStatusCount: 0,
       storedStatusCount: 0,
+      aiProcessingResults: [],
     },
   );
   assert.equal(completed, true);
@@ -169,7 +336,11 @@ test("stores multiple routed messages sequentially in order", async () => {
       await Promise.resolve();
       storedIds.push(message.id);
       activeStoreCount -= 1;
-      return { outcome: "accepted" };
+      return {
+        conversationId: CONVERSATION_ID,
+        messageId: message.id,
+        outcome: "accepted",
+      };
     },
   });
 
@@ -184,9 +355,20 @@ test("stores multiple routed messages sequentially in order", async () => {
 });
 
 test("counts duplicate message persistence as success", async () => {
+  let aiCallCount = 0;
   const dependencies = createDependencies({
-    routePayload: async () => [{ id: "duplicate" }],
-    storeMessage: async () => ({ outcome: "duplicate" }),
+    routePayload: async () => [
+      { id: "duplicate", organizationId: ORGANIZATION_ID, type: "text" },
+    ],
+    storeMessage: async () => ({
+      conversationId: CONVERSATION_ID,
+      messageId: MESSAGE_ID,
+      outcome: "duplicate",
+    }),
+    processAi: async () => {
+      aiCallCount += 1;
+      return { outcome: "failed", reason: "runtime_error" };
+    },
   });
 
   assert.deepEqual(
@@ -197,8 +379,10 @@ test("counts duplicate message persistence as success", async () => {
       storedMessageCount: 1,
       routedStatusCount: 0,
       storedStatusCount: 0,
+      aiProcessingResults: [],
     },
   );
+  assert.equal(aiCallCount, 0);
 });
 
 test("marks a routing failure with the fixed safe code", async () => {
@@ -233,7 +417,11 @@ test("marks a storage failure and stops before later messages", async () => {
       if (message.id === "fails") {
         throw new Error("database details");
       }
-      return { outcome: "accepted" };
+      return {
+        conversationId: CONVERSATION_ID,
+        messageId: message.id,
+        outcome: "accepted",
+      };
     },
     failEvent: async (eventId, errorCode) => {
       failCalls.push([eventId, errorCode]);
@@ -254,7 +442,11 @@ test("completes only after every message is stored", async () => {
     routePayload: async () => [{ id: "one" }, { id: "two" }],
     storeMessage: async (message) => {
       operations.push(`store:${message.id}`);
-      return { outcome: "accepted" };
+      return {
+        conversationId: CONVERSATION_ID,
+        messageId: message.id,
+        outcome: "accepted",
+      };
     },
     completeEvent: async () => {
       operations.push("complete");
@@ -502,6 +694,7 @@ test("status-only webhook is stored before the inbox event completes", async () 
       storedMessageCount: 0,
       routedStatusCount: 1,
       storedStatusCount: 1,
+      aiProcessingResults: [],
     },
   );
   assert.deepEqual(operations, ["status", "complete"]);
@@ -514,7 +707,11 @@ test("mixed webhook completes only after message and status stores", async () =>
     routeStatuses: async () => [{ id: "status" }],
     storeMessage: async () => {
       operations.push("message");
-      return { outcome: "accepted" };
+      return {
+        conversationId: CONVERSATION_ID,
+        messageId: MESSAGE_ID,
+        outcome: "accepted",
+      };
     },
     storeStatus: async () => {
       operations.push("status");

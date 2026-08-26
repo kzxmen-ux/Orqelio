@@ -1,3 +1,8 @@
+import type {
+  AiInboundProcessingInput,
+  AiInboundProcessingResult,
+} from "../../ai-runtime/inbound-processing-core.ts";
+
 export type WhatsappInboxProcessorResult =
   | {
       outcome: "processed";
@@ -5,6 +10,7 @@ export type WhatsappInboxProcessorResult =
       storedMessageCount: number;
       routedStatusCount: number;
       storedStatusCount: number;
+      aiProcessingResults: readonly AiInboundProcessingResult[];
     }
   | {
       outcome: "unavailable";
@@ -12,6 +18,7 @@ export type WhatsappInboxProcessorResult =
       storedMessageCount: 0;
       routedStatusCount: 0;
       storedStatusCount: 0;
+      aiProcessingResults: readonly [];
     };
 
 type ClaimResult =
@@ -25,6 +32,8 @@ type ClaimResult =
 
 type StoreResult = {
   outcome: "accepted" | "duplicate";
+  conversationId: string;
+  messageId: string;
 };
 
 export type WhatsappInboxProcessorDependencies<TMessage, TStatus> = {
@@ -33,12 +42,40 @@ export type WhatsappInboxProcessorDependencies<TMessage, TStatus> = {
   routeStatuses: (payload: unknown) => Promise<readonly TStatus[]>;
   storeMessage: (message: TMessage) => Promise<StoreResult>;
   storeStatus: (status: TStatus) => Promise<unknown>;
+  processAi: (
+    input: AiInboundProcessingInput,
+  ) => Promise<AiInboundProcessingResult>;
   completeEvent: (eventId: string) => Promise<unknown>;
   failEvent: (eventId: string, errorCode: string) => Promise<unknown>;
 };
 
 function processorFailure(): Error {
   return new Error("WhatsApp inbox processor failed.");
+}
+
+function getAiInput(
+  message: unknown,
+  storeResult: StoreResult,
+): AiInboundProcessingInput | null {
+  if (
+    storeResult.outcome !== "accepted" ||
+    typeof message !== "object" ||
+    message === null ||
+    Array.isArray(message) ||
+    !("type" in message) ||
+    message.type !== "text" ||
+    !("organizationId" in message) ||
+    typeof message.organizationId !== "string" ||
+    message.organizationId.length === 0
+  ) {
+    return null;
+  }
+
+  return {
+    organizationId: message.organizationId,
+    conversationId: storeResult.conversationId,
+    triggerMessageId: storeResult.messageId,
+  };
 }
 
 async function markFailed(
@@ -81,6 +118,7 @@ export async function processWhatsappInboxEventWithDependencies<
       storedMessageCount: 0,
       routedStatusCount: 0,
       storedStatusCount: 0,
+      aiProcessingResults: [],
     };
   }
 
@@ -105,10 +143,13 @@ export async function processWhatsappInboxEventWithDependencies<
   }
 
   let storedMessageCount = 0;
+  const aiProcessingResults: AiInboundProcessingResult[] = [];
 
   for (const message of messages) {
+    let storeResult: StoreResult;
+
     try {
-      await dependencies.storeMessage(message);
+      storeResult = await dependencies.storeMessage(message);
       storedMessageCount += 1;
     } catch {
       return markFailed(
@@ -116,6 +157,19 @@ export async function processWhatsappInboxEventWithDependencies<
         "message_storage_failed",
         dependencies.failEvent,
       );
+    }
+
+    const aiInput = getAiInput(message, storeResult);
+
+    if (aiInput) {
+      try {
+        aiProcessingResults.push(await dependencies.processAi(aiInput));
+      } catch {
+        aiProcessingResults.push({
+          outcome: "failed",
+          reason: "runtime_error",
+        });
+      }
     }
   }
 
@@ -146,5 +200,6 @@ export async function processWhatsappInboxEventWithDependencies<
     storedMessageCount,
     routedStatusCount: statuses.length,
     storedStatusCount,
+    aiProcessingResults,
   };
 }
