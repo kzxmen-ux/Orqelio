@@ -6,6 +6,13 @@ const sql = readFileSync(
   new URL("../../../supabase/migrations/20260811105332_ai_manager_settings_foundation.sql", import.meta.url),
   "utf8",
 );
+const timestampFixSql = readFileSync(
+  new URL(
+    "../../../supabase/migrations/20260826105242_fix_ai_manager_settings_timestamp_collision.sql",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 test("AI manager settings use tenant RLS and block direct mutations", () => {
   assert.match(sql, /enable row level security/g);
@@ -35,4 +42,118 @@ test("only owner and admin memberships can reach the settings RPC", () => {
   assert.match(sql, /private\.is_organization_member\(target_organization_id\)/g);
   assert.match(sql, /caller_id uuid := \(select auth\.uid\(\)\)/g);
   assert.doesNotMatch(sql, /grant execute[\s\S]*?to service_role/i);
+});
+
+test("timestamp fix safely replaces save and restore without changing authorization", () => {
+  const replacedFunctions = [
+    ...timestampFixSql.matchAll(
+      /create\s+or\s+replace\s+function\s+private\.(save_ai_manager_configuration_internal|restore_ai_manager_configuration_internal)\s*\(/gi,
+    ),
+  ].map((match) => match[1]?.toLowerCase());
+
+  assert.deepEqual(replacedFunctions, [
+    "save_ai_manager_configuration_internal",
+    "restore_ai_manager_configuration_internal",
+  ]);
+  assert.equal(
+    (
+      timestampFixSql.match(
+        /operation_timestamp\s+timestamptz\s*:=\s*clock_timestamp\(\)/gi,
+      ) ?? []
+    ).length,
+    2,
+  );
+  assert.doesNotMatch(timestampFixSql, /\bcurrent_time\b/i);
+
+  assert.match(
+    timestampFixSql,
+    /created_at,\s*updated_at\s*\)\s*values\s*\([\s\S]*?caller_id,\s*operation_timestamp,\s*operation_timestamp\s*\)/i,
+  );
+  assert.equal(
+    (
+      timestampFixSql.match(
+        /insert into public\.ai_manager_configuration_versions\s*\([\s\S]*?caller_id,\s*operation_timestamp\s*\)/gi,
+      ) ?? []
+    ).length,
+    2,
+  );
+  assert.match(
+    timestampFixSql,
+    /updated_at\s*=\s*operation_timestamp\s+where organization_id = target_organization_id/i,
+  );
+  assert.equal(
+    (
+      timestampFixSql.match(
+        /return query select next_version, next_status, true, operation_timestamp/gi,
+      ) ?? []
+    ).length,
+    2,
+  );
+
+  assert.equal(
+    (
+      timestampFixSql.match(
+        /language\s+plpgsql\s+security\s+definer\s+set\s+search_path\s*=\s*''/gi,
+      ) ?? []
+    ).length,
+    2,
+  );
+  assert.equal(
+    (timestampFixSql.match(/caller_id uuid := \(select auth\.uid\(\)\)/g) ?? [])
+      .length,
+    2,
+  );
+  assert.equal(
+    (
+      timestampFixSql.match(
+        /private\.is_organization_member\(target_organization_id\)/g,
+      ) ?? []
+    ).length,
+    2,
+  );
+  assert.equal(
+    (timestampFixSql.match(/pg_catalog\.pg_advisory_xact_lock/g) ?? [])
+      .length,
+    2,
+  );
+  assert.equal(
+    (
+      timestampFixSql.match(
+        /private\.ai_manager_configuration_is_ready\(/g,
+      ) ?? []
+    ).length,
+    2,
+  );
+  assert.equal(
+    (
+      timestampFixSql.match(
+        /insert into public\.ai_manager_configuration_versions/g,
+      ) ?? []
+    ).length,
+    2,
+  );
+  assert.match(
+    timestampFixSql,
+    /return query select\s+current_configuration\.version,[\s\S]*?false,[\s\S]*?current_configuration\.updated_at/i,
+  );
+  assert.match(timestampFixSql, /using errcode = '40001'/);
+  assert.match(timestampFixSql, /using errcode = 'P0001'/);
+
+  assert.equal(
+    (
+      timestampFixSql.match(
+        /revoke all on function private\.(?:save|restore)_ai_manager_configuration_internal\([\s\S]*?\)\s*from public, anon, service_role;/gi,
+      ) ?? []
+    ).length,
+    2,
+  );
+  assert.equal(
+    (
+      timestampFixSql.match(
+        /grant execute on function private\.(?:save|restore)_ai_manager_configuration_internal\([\s\S]*?\)\s*to authenticated;/gi,
+      ) ?? []
+    ).length,
+    2,
+  );
+  assert.doesNotMatch(timestampFixSql, /grant execute[\s\S]*?to service_role/i);
 });
