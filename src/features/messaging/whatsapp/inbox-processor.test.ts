@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { applyWhatsappDeliveryStatusWithRpc } from "./delivery-status-repository-core.ts";
 import { routeWhatsappDeliveryStatusesWithResolver } from "./delivery-status-routing-core.ts";
+import { processDurableAiInboundMessageWithDependencies } from "../../ai-runtime/durable-inbound-processing-core.ts";
 import {
   processWhatsappInboxEventWithDependencies,
   type WhatsappInboxProcessorDependencies,
@@ -23,6 +24,7 @@ const EVENT_ID = "27c85dd2-d2f5-4e28-a1f0-b970643c3115";
 const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
 const CONVERSATION_ID = "22222222-2222-4222-8222-222222222222";
 const MESSAGE_ID = "44444444-4444-4444-8444-444444444444";
+const RUN_ID = "55555555-5555-4555-8555-555555555555";
 const RAW_PAYLOAD = { object: "whatsapp_business_account", entry: [] };
 const SAFE_PROCESSOR_ERROR = /^Error: WhatsApp inbox processor failed\.$/;
 const MIGRATION_URL = new URL(
@@ -79,7 +81,7 @@ function createDependencies(
       outcome: "accepted",
     }),
     storeStatus: async () => ({ outcome: "updated" }),
-    processAi: async () => {
+    processDurableAi: async () => {
       throw new Error("Unexpected AI processing call.");
     },
     completeEvent: async () => undefined,
@@ -123,7 +125,7 @@ test("processes a claimed event", async () => {
   assert.equal(completedEventId, EVENT_ID);
 });
 
-test("invokes AI exactly once after a newly persisted inbound text", async () => {
+test("accepted text runs store, claim, runtime, terminal write, then completion", async () => {
   const operations: string[] = [];
   const aiInputs: unknown[] = [];
   const message = {
@@ -141,13 +143,30 @@ test("invokes AI exactly once after a newly persisted inbound text", async () =>
         outcome: "accepted",
       };
     },
-    processAi: async (input) => {
-      operations.push("ai");
+    processDurableAi: async (input) => {
       aiInputs.push(input);
-      return {
-        outcome: "decided",
-        decision: { action: "reply", text: "Здравствуйте!" },
-      };
+      return processDurableAiInboundMessageWithDependencies(input, {
+        claimRun: async () => {
+          operations.push("claim");
+          return {
+            outcome: "claimed",
+            runId: RUN_ID,
+            status: "processing",
+            attemptCount: 1,
+          };
+        },
+        processAi: async () => {
+          operations.push("runtime");
+          return {
+            outcome: "decided",
+            decision: { action: "reply", text: "Здравствуйте!" },
+          };
+        },
+        storeTerminalResult: async () => {
+          operations.push("terminal");
+          return { outcome: "stored", runId: RUN_ID, status: "decided" };
+        },
+      });
     },
     completeEvent: async () => {
       operations.push("complete");
@@ -164,13 +183,22 @@ test("invokes AI exactly once after a newly persisted inbound text", async () =>
       storedStatusCount: 0,
       aiProcessingResults: [
         {
-          outcome: "decided",
-          decision: { action: "reply", text: "Здравствуйте!" },
+          outcome: "completed",
+          aiResult: {
+            outcome: "decided",
+            decision: { action: "reply", text: "Здравствуйте!" },
+          },
         },
       ],
     },
   );
-  assert.deepEqual(operations, ["store", "ai", "complete"]);
+  assert.deepEqual(operations, [
+    "store",
+    "claim",
+    "runtime",
+    "terminal",
+    "complete",
+  ]);
   assert.deepEqual(aiInputs, [
     {
       organizationId: ORGANIZATION_ID,
@@ -189,9 +217,9 @@ test("does not invoke AI when inbound text persistence fails", async () => {
     storeMessage: async () => {
       throw new Error("database details");
     },
-    processAi: async () => {
+    processDurableAi: async () => {
       aiCallCount += 1;
-      return { outcome: "failed", reason: "runtime_error" };
+      return { outcome: "already_processing" };
     },
   });
 
@@ -208,9 +236,9 @@ test("does not invoke AI for an unsupported inbound message type", async () => {
     routePayload: async () => [
       { id: "image", organizationId: ORGANIZATION_ID, type: "image" },
     ],
-    processAi: async () => {
+    processDurableAi: async () => {
       aiCallCount += 1;
-      return { outcome: "failed", reason: "runtime_error" };
+      return { outcome: "already_processing" };
     },
   });
 
@@ -229,7 +257,10 @@ test("keeps an AI failure explicit without failing the durable event", async () 
     routePayload: async () => [
       { id: "text", organizationId: ORGANIZATION_ID, type: "text" },
     ],
-    processAi: async () => ({ outcome: "failed", reason: "provider_error" }),
+    processDurableAi: async () => ({
+      outcome: "completed",
+      aiResult: { outcome: "failed", reason: "provider_error" },
+    }),
     completeEvent: async () => {
       completed = true;
     },
@@ -242,33 +273,38 @@ test("keeps an AI failure explicit without failing the durable event", async () 
 
   assert.equal(completed, true);
   assert.deepEqual(result.aiProcessingResults, [
-    { outcome: "failed", reason: "provider_error" },
+    {
+      outcome: "completed",
+      aiResult: { outcome: "failed", reason: "provider_error" },
+    },
   ]);
 });
 
-test("isolates an unexpected AI exception after durable persistence", async () => {
+test("a durable orchestration exception prevents webhook completion safely", async () => {
   let completed = false;
+  const sensitive = "raw repository error and customer data";
   const dependencies = createDependencies({
     routePayload: async () => [
       { id: "text", organizationId: ORGANIZATION_ID, type: "text" },
     ],
-    processAi: async () => {
-      throw new Error("sensitive model error");
+    processDurableAi: async () => {
+      throw new Error(sensitive);
     },
     completeEvent: async () => {
       completed = true;
     },
   });
 
-  const result = await processWhatsappInboxEventWithDependencies(
-    EVENT_ID,
-    dependencies,
+  await assert.rejects(
+    processWhatsappInboxEventWithDependencies(EVENT_ID, dependencies),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, "WhatsApp inbox processor failed.");
+      assert.equal(error.message.includes(sensitive), false);
+      return true;
+    },
   );
-
-  assert.equal(completed, true);
-  assert.deepEqual(result.aiProcessingResults, [
-    { outcome: "failed", reason: "runtime_error" },
-  ]);
+  assert.equal(completed, false);
 });
 
 test("returns unavailable without routing or completing", async () => {
@@ -354,20 +390,45 @@ test("stores multiple routed messages sequentially in order", async () => {
   assert.equal(result.storedMessageCount, 3);
 });
 
-test("counts duplicate message persistence as success", async () => {
-  let aiCallCount = 0;
+test("duplicate text with no run claims and executes AI exactly once", async () => {
+  const operations: string[] = [];
+  let runtimeCalls = 0;
   const dependencies = createDependencies({
     routePayload: async () => [
       { id: "duplicate", organizationId: ORGANIZATION_ID, type: "text" },
     ],
-    storeMessage: async () => ({
-      conversationId: CONVERSATION_ID,
-      messageId: MESSAGE_ID,
-      outcome: "duplicate",
-    }),
-    processAi: async () => {
-      aiCallCount += 1;
-      return { outcome: "failed", reason: "runtime_error" };
+    storeMessage: async () => {
+      operations.push("store");
+      return {
+        conversationId: CONVERSATION_ID,
+        messageId: MESSAGE_ID,
+        outcome: "duplicate",
+      };
+    },
+    processDurableAi: async (input) => {
+      return processDurableAiInboundMessageWithDependencies(input, {
+        claimRun: async () => {
+          operations.push("claim");
+          return {
+            outcome: "claimed",
+            runId: RUN_ID,
+            status: "processing",
+            attemptCount: 1,
+          };
+        },
+        processAi: async () => {
+          operations.push("runtime");
+          runtimeCalls += 1;
+          return { outcome: "blocked", reason: "ai_configuration_missing" };
+        },
+        storeTerminalResult: async () => {
+          operations.push("terminal");
+          return { outcome: "stored", runId: RUN_ID, status: "blocked" };
+        },
+      });
+    },
+    completeEvent: async () => {
+      operations.push("complete");
     },
   });
 
@@ -379,10 +440,181 @@ test("counts duplicate message persistence as success", async () => {
       storedMessageCount: 1,
       routedStatusCount: 0,
       storedStatusCount: 0,
-      aiProcessingResults: [],
+      aiProcessingResults: [
+        {
+          outcome: "completed",
+          aiResult: {
+            outcome: "blocked",
+            reason: "ai_configuration_missing",
+          },
+        },
+      ],
     },
   );
-  assert.equal(aiCallCount, 0);
+  assert.equal(runtimeCalls, 1);
+  assert.deepEqual(operations, [
+    "store",
+    "claim",
+    "runtime",
+    "terminal",
+    "complete",
+  ]);
+});
+
+for (const messagePersistenceOutcome of ["accepted", "duplicate"] as const) {
+  for (const claimOutcome of [
+    "already_processing",
+    "already_terminal",
+  ] as const) {
+    test(`${messagePersistenceOutcome} text + ${claimOutcome} does not run AI`, async () => {
+      let runtimeCalls = 0;
+      let terminalWrites = 0;
+      let completed = false;
+      const dependencies = createDependencies({
+        routePayload: async () => [
+          { id: "text", organizationId: ORGANIZATION_ID, type: "text" },
+        ],
+        storeMessage: async () => ({
+          conversationId: CONVERSATION_ID,
+          messageId: MESSAGE_ID,
+          outcome: messagePersistenceOutcome,
+        }),
+        processDurableAi: async (input) =>
+          processDurableAiInboundMessageWithDependencies(input, {
+            claimRun: async () =>
+              claimOutcome === "already_processing"
+                ? {
+                    outcome: "already_processing",
+                    runId: RUN_ID,
+                    status: "processing",
+                    attemptCount: 1,
+                  }
+                : {
+                    outcome: "already_terminal",
+                    runId: RUN_ID,
+                    status: "decided",
+                    attemptCount: 1,
+                  },
+            processAi: async () => {
+              runtimeCalls += 1;
+              return { outcome: "failed", reason: "runtime_error" };
+            },
+            storeTerminalResult: async () => {
+              terminalWrites += 1;
+              return {
+                outcome: "stored",
+                runId: RUN_ID,
+                status: "failed",
+              };
+            },
+          }),
+        completeEvent: async () => {
+          completed = true;
+        },
+      });
+
+      const result = await processWhatsappInboxEventWithDependencies(
+        EVENT_ID,
+        dependencies,
+      );
+
+      assert.equal(runtimeCalls, 0);
+      assert.equal(terminalWrites, 0);
+      assert.equal(completed, true);
+      assert.deepEqual(
+        result.aiProcessingResults,
+        claimOutcome === "already_processing"
+          ? [{ outcome: "already_processing" }]
+          : [{ outcome: "already_terminal", status: "decided" }],
+      );
+    });
+  }
+}
+
+test("claim persistence failure leaves the webhook event uncompleted", async () => {
+  let completed = false;
+  let failMarks = 0;
+  const dependencies = createDependencies({
+    routePayload: async () => [
+      { id: "text", organizationId: ORGANIZATION_ID, type: "text" },
+    ],
+    processDurableAi: async (input) =>
+      processDurableAiInboundMessageWithDependencies(input, {
+        claimRun: async () => {
+          throw new Error("raw claim RPC error and customer data");
+        },
+        processAi: async () => ({ outcome: "failed", reason: "runtime_error" }),
+        storeTerminalResult: async () => ({
+          outcome: "stored",
+          runId: RUN_ID,
+          status: "failed",
+        }),
+      }),
+    completeEvent: async () => {
+      completed = true;
+    },
+    failEvent: async () => {
+      failMarks += 1;
+    },
+  });
+
+  await assert.rejects(
+    processWhatsappInboxEventWithDependencies(EVENT_ID, dependencies),
+    SAFE_PROCESSOR_ERROR,
+  );
+  assert.equal(completed, false);
+  assert.equal(failMarks, 0);
+});
+
+test("terminal persistence failure leaves the webhook event uncompleted", async () => {
+  const operations: string[] = [];
+  let failMarks = 0;
+  const dependencies = createDependencies({
+    routePayload: async () => [
+      { id: "text", organizationId: ORGANIZATION_ID, type: "text" },
+    ],
+    storeMessage: async () => {
+      operations.push("store");
+      return {
+        conversationId: CONVERSATION_ID,
+        messageId: MESSAGE_ID,
+        outcome: "accepted",
+      };
+    },
+    processDurableAi: async (input) =>
+      processDurableAiInboundMessageWithDependencies(input, {
+        claimRun: async () => {
+          operations.push("claim");
+          return {
+            outcome: "claimed",
+            runId: RUN_ID,
+            status: "processing",
+            attemptCount: 1,
+          };
+        },
+        processAi: async () => {
+          operations.push("runtime");
+          return { outcome: "failed", reason: "provider_error" };
+        },
+        storeTerminalResult: async () => {
+          operations.push("terminal");
+          throw new Error("raw terminal RPC error and model details");
+        },
+      }),
+    completeEvent: async () => {
+      operations.push("complete");
+    },
+    failEvent: async () => {
+      failMarks += 1;
+    },
+  });
+
+  await assert.rejects(
+    processWhatsappInboxEventWithDependencies(EVENT_ID, dependencies),
+    SAFE_PROCESSOR_ERROR,
+  );
+  assert.deepEqual(operations, ["store", "claim", "runtime", "terminal"]);
+  assert.equal(failMarks, 0);
 });
 
 test("marks a routing failure with the fixed safe code", async () => {

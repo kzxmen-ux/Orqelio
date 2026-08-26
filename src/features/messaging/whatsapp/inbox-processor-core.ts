@@ -1,7 +1,5 @@
-import type {
-  AiInboundProcessingInput,
-  AiInboundProcessingResult,
-} from "../../ai-runtime/inbound-processing-core.ts";
+import type { DurableAiInboundProcessingResult } from "../../ai-runtime/durable-inbound-processing-core.ts";
+import type { AiInboundProcessingInput } from "../../ai-runtime/inbound-processing-core.ts";
 
 export type WhatsappInboxProcessorResult =
   | {
@@ -10,7 +8,7 @@ export type WhatsappInboxProcessorResult =
       storedMessageCount: number;
       routedStatusCount: number;
       storedStatusCount: number;
-      aiProcessingResults: readonly AiInboundProcessingResult[];
+      aiProcessingResults: readonly DurableAiInboundProcessingResult[];
     }
   | {
       outcome: "unavailable";
@@ -42,9 +40,9 @@ export type WhatsappInboxProcessorDependencies<TMessage, TStatus> = {
   routeStatuses: (payload: unknown) => Promise<readonly TStatus[]>;
   storeMessage: (message: TMessage) => Promise<StoreResult>;
   storeStatus: (status: TStatus) => Promise<unknown>;
-  processAi: (
+  processDurableAi: (
     input: AiInboundProcessingInput,
-  ) => Promise<AiInboundProcessingResult>;
+  ) => Promise<DurableAiInboundProcessingResult>;
   completeEvent: (eventId: string) => Promise<unknown>;
   failEvent: (eventId: string, errorCode: string) => Promise<unknown>;
 };
@@ -58,7 +56,6 @@ function getAiInput(
   storeResult: StoreResult,
 ): AiInboundProcessingInput | null {
   if (
-    storeResult.outcome !== "accepted" ||
     typeof message !== "object" ||
     message === null ||
     Array.isArray(message) ||
@@ -143,7 +140,7 @@ export async function processWhatsappInboxEventWithDependencies<
   }
 
   let storedMessageCount = 0;
-  const aiProcessingResults: AiInboundProcessingResult[] = [];
+  const aiProcessingResults: DurableAiInboundProcessingResult[] = [];
 
   for (const message of messages) {
     let storeResult: StoreResult;
@@ -163,12 +160,9 @@ export async function processWhatsappInboxEventWithDependencies<
 
     if (aiInput) {
       try {
-        aiProcessingResults.push(await dependencies.processAi(aiInput));
+        aiProcessingResults.push(await dependencies.processDurableAi(aiInput));
       } catch {
-        aiProcessingResults.push({
-          outcome: "failed",
-          reason: "runtime_error",
-        });
+        throw processorFailure();
       }
     }
   }

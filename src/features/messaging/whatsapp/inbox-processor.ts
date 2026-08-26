@@ -12,7 +12,7 @@ import {
 } from "./inbox-processor-core";
 import { storeRoutedWhatsappInboundMessage } from "./inbound-message-repository";
 import { applyWhatsappDeliveryStatus } from "./delivery-status-repository";
-import { processAiInboundMessage } from "../../ai-runtime/inbound-processing";
+import { processDurableAiInboundMessage } from "../../ai-runtime/durable-inbound-processing";
 import {
   routeWhatsappDeliveryStatuses,
   type RoutedWhatsappDeliveryStatus,
@@ -33,7 +33,7 @@ const dependencies: WhatsappInboxProcessorDependencies<
     routeStatuses: routeWhatsappDeliveryStatuses,
     storeMessage: storeRoutedWhatsappInboundMessage,
     storeStatus: applyWhatsappDeliveryStatus,
-    processAi: processAiInboundMessage,
+    processDurableAi: processDurableAiInboundMessage,
   };
 
 export function processWhatsappInboxEvent(
