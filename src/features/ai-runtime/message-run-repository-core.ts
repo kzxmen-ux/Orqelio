@@ -40,13 +40,28 @@ export type AiMessageRunTerminalStoreResult = {
   status: AiMessageRunTerminalStatus;
 };
 
+export type AiMessageRunRecoveryCandidate = {
+  organizationId: string;
+  conversationId: string;
+  triggerMessageId: string;
+  attemptCount: number;
+};
+
+export type AiMessageRunRecoveryResult = {
+  retryable: readonly AiMessageRunRecoveryCandidate[];
+  exhaustedCount: number;
+};
+
 export type AiMessageRunRpcResult = {
   data: unknown;
   error: unknown;
 };
 
 export type AiMessageRunRpc = (
-  functionName: "claim_ai_message_run" | "complete_ai_message_run",
+  functionName:
+    | "claim_ai_message_run"
+    | "complete_ai_message_run"
+    | "recover_stale_ai_message_runs",
   parameters: Record<string, unknown>,
 ) => Promise<AiMessageRunRpcResult>;
 
@@ -192,6 +207,63 @@ function parseTerminalStoreResult(
   };
 }
 
+function normalizeRecoveryLimit(limit: number | undefined): number {
+  if (limit === undefined) return 25;
+  if (!Number.isFinite(limit)) throw repositoryFailure();
+
+  return Math.min(50, Math.max(1, Math.trunc(limit)));
+}
+
+function parseRecoveryResult(
+  data: unknown,
+  limit: number,
+): AiMessageRunRecoveryResult | null {
+  if (!Array.isArray(data) || data.length !== 1 || !isRecord(data[0])) {
+    return null;
+  }
+
+  const row = data[0];
+
+  if (
+    !Array.isArray(row.retryable) ||
+    !Number.isInteger(row.exhausted_count) ||
+    typeof row.exhausted_count !== "number" ||
+    row.exhausted_count < 0 ||
+    row.retryable.length + row.exhausted_count > limit
+  ) {
+    return null;
+  }
+
+  const retryable: AiMessageRunRecoveryCandidate[] = [];
+
+  for (const candidate of row.retryable) {
+    if (
+      !isRecord(candidate) ||
+      !isUuid(candidate.organization_id) ||
+      !isUuid(candidate.conversation_id) ||
+      !isUuid(candidate.trigger_message_id) ||
+      !Number.isInteger(candidate.attempt_count) ||
+      typeof candidate.attempt_count !== "number" ||
+      candidate.attempt_count < 1 ||
+      candidate.attempt_count >= 3
+    ) {
+      return null;
+    }
+
+    retryable.push({
+      organizationId: candidate.organization_id,
+      conversationId: candidate.conversation_id,
+      triggerMessageId: candidate.trigger_message_id,
+      attemptCount: candidate.attempt_count,
+    });
+  }
+
+  return {
+    retryable,
+    exhaustedCount: row.exhausted_count,
+  };
+}
+
 export async function claimAiMessageRunWithRpc(
   input: AiInboundProcessingInput,
   rpc: AiMessageRunRpc,
@@ -268,4 +340,28 @@ export async function storeAiMessageRunTerminalResultWithRpc(
   if (!stored) throw repositoryFailure();
 
   return stored;
+}
+
+export async function recoverStaleAiMessageRunsWithRpc(
+  limit: number | undefined,
+  rpc: AiMessageRunRpc,
+): Promise<AiMessageRunRecoveryResult> {
+  const normalizedLimit = normalizeRecoveryLimit(limit);
+  let rpcResult: AiMessageRunRpcResult;
+
+  try {
+    rpcResult = await rpc("recover_stale_ai_message_runs", {
+      p_limit: normalizedLimit,
+    });
+  } catch {
+    throw repositoryFailure();
+  }
+
+  if (rpcResult.error) throw repositoryFailure();
+
+  const recovered = parseRecoveryResult(rpcResult.data, normalizedLimit);
+
+  if (!recovered) throw repositoryFailure();
+
+  return recovered;
 }

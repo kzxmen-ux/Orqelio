@@ -8,8 +8,10 @@ import type {
 } from "./inbound-processing-core.ts";
 import {
   claimAiMessageRunWithRpc,
+  recoverStaleAiMessageRunsWithRpc,
   storeAiMessageRunTerminalResultWithRpc,
   type AiMessageRunClaimResult,
+  type AiMessageRunRecoveryResult,
   type AiMessageRunRpc,
   type AiMessageRunTerminalStoreResult,
 } from "./message-run-repository-core.ts";
@@ -32,4 +34,10 @@ export function storeAiMessageRunTerminalResult(
   result: AiInboundProcessingResult,
 ): Promise<AiMessageRunTerminalStoreResult> {
   return storeAiMessageRunTerminalResultWithRpc(runId, result, callRpc);
+}
+
+export function recoverStaleAiMessageRuns(
+  limit?: number,
+): Promise<AiMessageRunRecoveryResult> {
+  return recoverStaleAiMessageRunsWithRpc(limit, callRpc);
 }
