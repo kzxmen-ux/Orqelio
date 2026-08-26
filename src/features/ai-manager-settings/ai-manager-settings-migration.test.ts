@@ -13,6 +13,13 @@ const timestampFixSql = readFileSync(
   ),
   "utf8",
 );
+const serviceRoleReadGrantSql = readFileSync(
+  new URL(
+    "../../../supabase/migrations/20260826112247_grant_ai_manager_configuration_read_to_service_role.sql",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 test("AI manager settings use tenant RLS and block direct mutations", () => {
   assert.match(sql, /enable row level security/g);
@@ -156,4 +163,27 @@ test("timestamp fix safely replaces save and restore without changing authorizat
     2,
   );
   assert.doesNotMatch(timestampFixSql, /grant execute[\s\S]*?to service_role/i);
+});
+
+test("AI runtime service role receives only current configuration read access", () => {
+  const normalizedSql = serviceRoleReadGrantSql
+    .replace(/--.*$/gm, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+  assert.equal(
+    normalizedSql,
+    "grant select on public.ai_manager_configurations to service_role;",
+  );
+  assert.doesNotMatch(
+    serviceRoleReadGrantSql,
+    /grant\s+(?:insert|update|delete|truncate|references|trigger)\b/i,
+  );
+  assert.doesNotMatch(serviceRoleReadGrantSql, /\bto\s+anon\b/i);
+  assert.doesNotMatch(serviceRoleReadGrantSql, /disable\s+row\s+level\s+security/i);
+  assert.doesNotMatch(
+    serviceRoleReadGrantSql,
+    /public\.ai_manager_configuration_versions/i,
+  );
 });
