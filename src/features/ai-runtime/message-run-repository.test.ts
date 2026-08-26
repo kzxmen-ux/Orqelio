@@ -3,10 +3,13 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import type { AiInboundProcessingResult } from "./inbound-processing-core.ts";
+import { runAiMessageRunRecoveryWorkerWithDependencies } from "./message-run-recovery-worker-core.ts";
 import {
   claimAiMessageRunWithRpc,
+  listPendingAiMessageRunsWithRpc,
   recoverStaleAiMessageRunsWithRpc,
   storeAiMessageRunTerminalResultWithRpc,
+  type AiMessageRunRecoveryCandidate,
   type AiMessageRunRpc,
 } from "./message-run-repository-core.ts";
 
@@ -14,12 +17,15 @@ const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
 const CONVERSATION_ID = "22222222-2222-4222-8222-222222222222";
 const MESSAGE_ID = "33333333-3333-4333-8333-333333333333";
 const RUN_ID = "44444444-4444-4444-8444-444444444444";
+const SECOND_MESSAGE_ID = "55555555-5555-4555-8555-555555555555";
+const THIRD_MESSAGE_ID = "66666666-6666-4666-8666-666666666666";
 const INPUT = {
   organizationId: ORGANIZATION_ID,
   conversationId: CONVERSATION_ID,
   triggerMessageId: MESSAGE_ID,
 };
 const SAFE_REPOSITORY_ERROR = "AI message run repository operation failed.";
+const SAFE_WORKER_ERROR = "AI message run recovery worker failed.";
 const MIGRATION_URL = new URL(
   "../../../supabase/migrations/20260826201736_ai_message_runs.sql",
   import.meta.url,
@@ -34,6 +40,26 @@ const RECOVERY_MIGRATION_URL = new URL(
 const RECOVERY_MIGRATION_SQL = (
   await readFile(RECOVERY_MIGRATION_URL, "utf8")
 )
+  .replace(/\s+/g, " ")
+  .toLowerCase();
+const DISPATCHER_MIGRATION_URL = new URL(
+  "../../../supabase/migrations/20260826205939_ai_message_run_pending_dispatcher.sql",
+  import.meta.url,
+);
+const DISPATCHER_MIGRATION_SQL = (
+  await readFile(DISPATCHER_MIGRATION_URL, "utf8")
+)
+  .replace(/\s+/g, " ")
+  .toLowerCase();
+const WORKER_CORE_URL = new URL(
+  "./message-run-recovery-worker-core.ts",
+  import.meta.url,
+);
+const WORKER_URL = new URL(
+  "./message-run-recovery-worker.ts",
+  import.meta.url,
+);
+const WORKER_SOURCE = `${await readFile(WORKER_CORE_URL, "utf8")} ${await readFile(WORKER_URL, "utf8")}`
   .replace(/\s+/g, " ")
   .toLowerCase();
 
@@ -658,4 +684,404 @@ test("schema introduces no raw prompt, OpenAI, webhook, or provider payload colu
   ]) {
     assert.equal(tableDefinition.includes(forbidden), false);
   }
+});
+
+test("pending discovery returns only validated technical candidates", async () => {
+  const calls: unknown[] = [];
+
+  const result = await listPendingAiMessageRunsWithRpc(
+    undefined,
+    async (functionName, parameters) => {
+      calls.push({ functionName, parameters });
+      return {
+        data: [
+          {
+            attempt_count: 0,
+            conversation_id: CONVERSATION_ID,
+            customer_text: "must-not-return",
+            organization_id: ORGANIZATION_ID,
+            provider_id: "must-not-return",
+            trigger_message_id: MESSAGE_ID,
+          },
+          {
+            attempt_count: 2,
+            conversation_id: CONVERSATION_ID,
+            organization_id: ORGANIZATION_ID,
+            trigger_message_id: SECOND_MESSAGE_ID,
+          },
+        ],
+        error: null,
+      };
+    },
+  );
+
+  assert.deepEqual(calls, [
+    {
+      functionName: "list_pending_ai_message_runs",
+      parameters: { p_limit: 25 },
+    },
+  ]);
+  assert.deepEqual(result, [
+    {
+      organizationId: ORGANIZATION_ID,
+      conversationId: CONVERSATION_ID,
+      triggerMessageId: MESSAGE_ID,
+      attemptCount: 0,
+    },
+    {
+      organizationId: ORGANIZATION_ID,
+      conversationId: CONVERSATION_ID,
+      triggerMessageId: SECOND_MESSAGE_ID,
+      attemptCount: 2,
+    },
+  ]);
+  assert.equal(JSON.stringify(result).includes("must-not-return"), false);
+});
+
+test("pending discovery normalizes limits and rejects unsafe results", async () => {
+  const limits: number[] = [];
+  const rpc: AiMessageRunRpc = async (_functionName, parameters) => {
+    limits.push(parameters.p_limit as number);
+    return { data: [], error: null };
+  };
+
+  await listPendingAiMessageRunsWithRpc(0, rpc);
+  await listPendingAiMessageRunsWithRpc(100, rpc);
+  await listPendingAiMessageRunsWithRpc(12.9, rpc);
+  assert.deepEqual(limits, [1, 50, 12]);
+
+  await assert.rejects(
+    listPendingAiMessageRunsWithRpc(25, async () => ({
+      data: [
+        {
+          attempt_count: 3,
+          conversation_id: CONVERSATION_ID,
+          organization_id: ORGANIZATION_ID,
+          trigger_message_id: MESSAGE_ID,
+        },
+      ],
+      error: null,
+    })),
+    new RegExp(`^Error: ${SAFE_REPOSITORY_ERROR.replace(".", "\\.")}$`),
+  );
+});
+
+test("pending discovery failures never leak database details", async () => {
+  const sensitive = "raw SQL, customer text, and provider identifiers";
+
+  for (const rpc of [
+    async () => ({ data: null, error: { message: sensitive } }),
+    async () => {
+      throw new Error(sensitive);
+    },
+  ]) {
+    await assert.rejects(
+      listPendingAiMessageRunsWithRpc(25, rpc),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, SAFE_REPOSITORY_ERROR);
+        assert.equal(error.message.includes(sensitive), false);
+        return true;
+      },
+    );
+  }
+});
+
+test("dispatcher migration caps attempts and claim cannot create attempt four", () => {
+  assert.match(
+    DISPATCHER_MIGRATION_SQL,
+    /constraint ai_message_runs_attempt_count_max check \(attempt_count <= 3\)/,
+  );
+  assert.match(
+    RECOVERY_MIGRATION_SQL,
+    /status = 'pending' and attempt_count >= 0/,
+  );
+  assert.match(
+    DISPATCHER_MIGRATION_SQL,
+    /create or replace function public\.claim_ai_message_run\(/,
+  );
+  assert.match(
+    DISPATCHER_MIGRATION_SQL,
+    /attempt_count = run\.attempt_count \+ 1.*where run\.trigger_message_id = p_trigger_message_id and run\.status = 'pending' and run\.attempt_count < 3/,
+  );
+  assert.match(
+    DISPATCHER_MIGRATION_SQL,
+    /if claimed_run_status = 'pending' and claimed_attempt_count >= 3 then raise exception 'ai message run attempt limit reached'/,
+  );
+  assert.doesNotMatch(DISPATCHER_MIGRATION_SQL, /attempt_count < 4/);
+});
+
+test("replaced claim preserves tenant binding and terminal concurrency outcomes", () => {
+  for (const condition of [
+    "message.id = p_trigger_message_id",
+    "message.organization_id = p_organization_id",
+    "message.conversation_id = p_conversation_id",
+    "message.direction = 'inbound'",
+    "message.message_type = 'text'",
+    "conversation.organization_id = p_organization_id",
+  ]) {
+    assert.ok(DISPATCHER_MIGRATION_SQL.includes(condition));
+  }
+  assert.match(
+    DISPATCHER_MIGRATION_SQL,
+    /on conflict \(trigger_message_id\) do nothing/,
+  );
+  assert.match(DISPATCHER_MIGRATION_SQL, /'already_processing'::text/);
+  assert.match(DISPATCHER_MIGRATION_SQL, /'already_terminal'::text/);
+});
+
+test("pending RPC discovers every eligible pending row in deterministic order", () => {
+  assert.match(
+    DISPATCHER_MIGRATION_SQL,
+    /create function public\.list_pending_ai_message_runs\( p_limit integer \)/,
+  );
+  assert.match(
+    DISPATCHER_MIGRATION_SQL,
+    /if p_limit is null or p_limit < 1 or p_limit > 50 then/,
+  );
+  assert.match(
+    DISPATCHER_MIGRATION_SQL,
+    /where run\.status = 'pending' and run\.attempt_count < 3 order by run\.updated_at, run\.id limit p_limit/,
+  );
+
+  const returnProjection = DISPATCHER_MIGRATION_SQL.slice(
+    DISPATCHER_MIGRATION_SQL.indexOf(
+      "create function public.list_pending_ai_message_runs",
+    ),
+    DISPATCHER_MIGRATION_SQL.indexOf("language plpgsql", DISPATCHER_MIGRATION_SQL.indexOf("create function public.list_pending_ai_message_runs")),
+  );
+  for (const field of [
+    "organization_id uuid",
+    "conversation_id uuid",
+    "trigger_message_id uuid",
+    "attempt_count integer",
+  ]) {
+    assert.ok(returnProjection.includes(field));
+  }
+  for (const forbidden of ["customer", "phone", "provider", "decision", "failure_reason"]) {
+    assert.equal(returnProjection.includes(forbidden), false);
+  }
+});
+
+test("dispatcher RPCs remain service-role-only without table privileges", () => {
+  assert.match(
+    DISPATCHER_MIGRATION_SQL,
+    /security definer set search_path = ''/,
+  );
+  for (const signature of [
+    "public.claim_ai_message_run(uuid, uuid, uuid)",
+    "public.list_pending_ai_message_runs(integer)",
+  ]) {
+    assert.ok(
+      DISPATCHER_MIGRATION_SQL.includes(
+        `revoke all on function ${signature} from public, anon, authenticated, service_role`,
+      ),
+    );
+    assert.ok(
+      DISPATCHER_MIGRATION_SQL.includes(
+        `grant execute on function ${signature} to service_role`,
+      ),
+    );
+  }
+  assert.doesNotMatch(
+    DISPATCHER_MIGRATION_SQL,
+    /grant (select|insert|update|delete|truncate|references|trigger).*on public\.ai_message_runs/,
+  );
+  assert.doesNotMatch(DISPATCHER_MIGRATION_SQL, /grant .* to anon/);
+  assert.doesNotMatch(DISPATCHER_MIGRATION_SQL, /grant .* to authenticated/);
+  assert.doesNotMatch(DISPATCHER_MIGRATION_SQL, /disable row level security/);
+});
+
+test("worker recovers, discovers all pending work, and processes sequentially", async () => {
+  const retryableOnlyTelemetry: AiMessageRunRecoveryCandidate = {
+    organizationId: ORGANIZATION_ID,
+    conversationId: CONVERSATION_ID,
+    triggerMessageId: THIRD_MESSAGE_ID,
+    attemptCount: 1,
+  };
+  const pending: readonly AiMessageRunRecoveryCandidate[] = [
+    {
+      organizationId: ORGANIZATION_ID,
+      conversationId: CONVERSATION_ID,
+      triggerMessageId: MESSAGE_ID,
+      attemptCount: 0,
+    },
+    {
+      organizationId: ORGANIZATION_ID,
+      conversationId: CONVERSATION_ID,
+      triggerMessageId: SECOND_MESSAGE_ID,
+      attemptCount: 2,
+    },
+  ];
+  const operations: string[] = [];
+  let active = 0;
+  let maximumActive = 0;
+
+  const result = await runAiMessageRunRecoveryWorkerWithDependencies(20, {
+    recoverStale: async (limit) => {
+      operations.push(`recover:${limit}`);
+      return { retryable: [retryableOnlyTelemetry], exhaustedCount: 2 };
+    },
+    listPending: async (limit) => {
+      operations.push(`list:${limit}`);
+      return pending;
+    },
+    processDurable: async (input) => {
+      operations.push(`process:${input.triggerMessageId}`);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await Promise.resolve();
+      active -= 1;
+
+      if (input.triggerMessageId === MESSAGE_ID) {
+        return {
+          outcome: "completed",
+          aiResult: { outcome: "failed", reason: "runtime_error" },
+        };
+      }
+
+      return { outcome: "already_processing" };
+    },
+  });
+
+  assert.deepEqual(operations, [
+    "recover:20",
+    "list:20",
+    `process:${MESSAGE_ID}`,
+    `process:${SECOND_MESSAGE_ID}`,
+  ]);
+  assert.equal(maximumActive, 1);
+  assert.equal(operations.includes(`process:${THIRD_MESSAGE_ID}`), false);
+  assert.deepEqual(result, {
+    recoveredRetryableCount: 1,
+    exhaustedCount: 2,
+    pendingCandidateCount: 2,
+    completedCount: 1,
+    alreadyProcessingCount: 1,
+    alreadyTerminalCount: 0,
+    failedCount: 0,
+  });
+});
+
+test("worker counts terminal concurrency races and continues after a candidate failure", async () => {
+  const processed: string[] = [];
+  const candidates: readonly AiMessageRunRecoveryCandidate[] = [
+    {
+      organizationId: ORGANIZATION_ID,
+      conversationId: CONVERSATION_ID,
+      triggerMessageId: MESSAGE_ID,
+      attemptCount: 0,
+    },
+    {
+      organizationId: ORGANIZATION_ID,
+      conversationId: CONVERSATION_ID,
+      triggerMessageId: SECOND_MESSAGE_ID,
+      attemptCount: 1,
+    },
+    {
+      organizationId: ORGANIZATION_ID,
+      conversationId: CONVERSATION_ID,
+      triggerMessageId: THIRD_MESSAGE_ID,
+      attemptCount: 2,
+    },
+  ];
+
+  const result = await runAiMessageRunRecoveryWorkerWithDependencies(
+    undefined,
+    {
+      recoverStale: async () => ({ retryable: [], exhaustedCount: 0 }),
+      listPending: async () => candidates,
+      processDurable: async (input) => {
+        processed.push(input.triggerMessageId);
+        if (input.triggerMessageId === MESSAGE_ID) {
+          throw new Error("sensitive candidate failure");
+        }
+        if (input.triggerMessageId === SECOND_MESSAGE_ID) {
+          return { outcome: "already_terminal", status: "decided" };
+        }
+        return {
+          outcome: "completed",
+          aiResult: {
+            outcome: "blocked",
+            reason: "ai_configuration_not_ready",
+          },
+        };
+      },
+    },
+  );
+
+  assert.deepEqual(processed, [MESSAGE_ID, SECOND_MESSAGE_ID, THIRD_MESSAGE_ID]);
+  assert.deepEqual(result, {
+    recoveredRetryableCount: 0,
+    exhaustedCount: 0,
+    pendingCandidateCount: 3,
+    completedCount: 1,
+    alreadyProcessingCount: 0,
+    alreadyTerminalCount: 1,
+    failedCount: 1,
+  });
+  assert.equal(JSON.stringify(result).includes("sensitive"), false);
+});
+
+test("worker aborts infrastructure failures with one fixed safe error", async () => {
+  const sensitive = "raw database and customer details";
+  let listCalls = 0;
+  let processCalls = 0;
+
+  await assert.rejects(
+    runAiMessageRunRecoveryWorkerWithDependencies(undefined, {
+      recoverStale: async () => {
+        throw new Error(sensitive);
+      },
+      listPending: async () => {
+        listCalls += 1;
+        return [];
+      },
+      processDurable: async () => {
+        processCalls += 1;
+        return { outcome: "already_processing" };
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, SAFE_WORKER_ERROR);
+      assert.equal(error.message.includes(sensitive), false);
+      return true;
+    },
+  );
+  assert.equal(listCalls, 0);
+  assert.equal(processCalls, 0);
+
+  await assert.rejects(
+    runAiMessageRunRecoveryWorkerWithDependencies(undefined, {
+      recoverStale: async () => ({ retryable: [], exhaustedCount: 0 }),
+      listPending: async () => {
+        throw new Error(sensitive);
+      },
+      processDurable: async () => {
+        processCalls += 1;
+        return { outcome: "already_processing" };
+      },
+    }),
+    new RegExp(`^Error: ${SAFE_WORKER_ERROR.replace(".", "\\.")}$`),
+  );
+  assert.equal(processCalls, 0);
+});
+
+test("worker foundation has no outbound, provider, CRM, or runtime duplication", () => {
+  for (const forbidden of [
+    "runa runtime",
+    "runairuntime",
+    "openai",
+    "whatsapp",
+    "meta",
+    "outbound",
+    "crm",
+    "promise.all",
+  ]) {
+    assert.equal(WORKER_SOURCE.includes(forbidden), false);
+  }
+  assert.match(WORKER_SOURCE, /processdurableaiinboundmessage/);
+  assert.match(WORKER_SOURCE, /recoverstaleaimessageruns/);
+  assert.match(WORKER_SOURCE, /listpendingaimessageruns/);
 });

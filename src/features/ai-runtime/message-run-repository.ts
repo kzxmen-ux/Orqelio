@@ -8,9 +8,11 @@ import type {
 } from "./inbound-processing-core.ts";
 import {
   claimAiMessageRunWithRpc,
+  listPendingAiMessageRunsWithRpc,
   recoverStaleAiMessageRunsWithRpc,
   storeAiMessageRunTerminalResultWithRpc,
   type AiMessageRunClaimResult,
+  type AiMessageRunRecoveryCandidate,
   type AiMessageRunRecoveryResult,
   type AiMessageRunRpc,
   type AiMessageRunTerminalStoreResult,
@@ -40,4 +42,10 @@ export function recoverStaleAiMessageRuns(
   limit?: number,
 ): Promise<AiMessageRunRecoveryResult> {
   return recoverStaleAiMessageRunsWithRpc(limit, callRpc);
+}
+
+export function listPendingAiMessageRuns(
+  limit?: number,
+): Promise<readonly AiMessageRunRecoveryCandidate[]> {
+  return listPendingAiMessageRunsWithRpc(limit, callRpc);
 }

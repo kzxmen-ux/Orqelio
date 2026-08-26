@@ -61,6 +61,7 @@ export type AiMessageRunRpc = (
   functionName:
     | "claim_ai_message_run"
     | "complete_ai_message_run"
+    | "list_pending_ai_message_runs"
     | "recover_stale_ai_message_runs",
   parameters: Record<string, unknown>,
 ) => Promise<AiMessageRunRpcResult>;
@@ -207,11 +208,44 @@ function parseTerminalStoreResult(
   };
 }
 
-function normalizeRecoveryLimit(limit: number | undefined): number {
+function normalizeBatchLimit(limit: number | undefined): number {
   if (limit === undefined) return 25;
   if (!Number.isFinite(limit)) throw repositoryFailure();
 
   return Math.min(50, Math.max(1, Math.trunc(limit)));
+}
+
+function parsePendingCandidates(
+  data: unknown,
+  limit: number,
+): readonly AiMessageRunRecoveryCandidate[] | null {
+  if (!Array.isArray(data) || data.length > limit) return null;
+
+  const candidates: AiMessageRunRecoveryCandidate[] = [];
+
+  for (const candidate of data) {
+    if (
+      !isRecord(candidate) ||
+      !isUuid(candidate.organization_id) ||
+      !isUuid(candidate.conversation_id) ||
+      !isUuid(candidate.trigger_message_id) ||
+      !Number.isInteger(candidate.attempt_count) ||
+      typeof candidate.attempt_count !== "number" ||
+      candidate.attempt_count < 0 ||
+      candidate.attempt_count >= 3
+    ) {
+      return null;
+    }
+
+    candidates.push({
+      organizationId: candidate.organization_id,
+      conversationId: candidate.conversation_id,
+      triggerMessageId: candidate.trigger_message_id,
+      attemptCount: candidate.attempt_count,
+    });
+  }
+
+  return candidates;
 }
 
 function parseRecoveryResult(
@@ -346,7 +380,7 @@ export async function recoverStaleAiMessageRunsWithRpc(
   limit: number | undefined,
   rpc: AiMessageRunRpc,
 ): Promise<AiMessageRunRecoveryResult> {
-  const normalizedLimit = normalizeRecoveryLimit(limit);
+  const normalizedLimit = normalizeBatchLimit(limit);
   let rpcResult: AiMessageRunRpcResult;
 
   try {
@@ -364,4 +398,28 @@ export async function recoverStaleAiMessageRunsWithRpc(
   if (!recovered) throw repositoryFailure();
 
   return recovered;
+}
+
+export async function listPendingAiMessageRunsWithRpc(
+  limit: number | undefined,
+  rpc: AiMessageRunRpc,
+): Promise<readonly AiMessageRunRecoveryCandidate[]> {
+  const normalizedLimit = normalizeBatchLimit(limit);
+  let rpcResult: AiMessageRunRpcResult;
+
+  try {
+    rpcResult = await rpc("list_pending_ai_message_runs", {
+      p_limit: normalizedLimit,
+    });
+  } catch {
+    throw repositoryFailure();
+  }
+
+  if (rpcResult.error) throw repositoryFailure();
+
+  const candidates = parsePendingCandidates(rpcResult.data, normalizedLimit);
+
+  if (!candidates) throw repositoryFailure();
+
+  return candidates;
 }
