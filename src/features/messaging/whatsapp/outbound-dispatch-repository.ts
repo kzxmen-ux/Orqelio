@@ -10,12 +10,14 @@ import {
   markWhatsappOutboundDispatchingWithRpc,
   prepareAiReplyWhatsappDispatchWithRpc,
   prepareWhatsappOutboundDispatchWithRpc,
+  quarantineStaleAiReplyWhatsappDispatchesWithRpc,
   recordWhatsappOutboundProviderAcceptanceWithRpc,
   type ClaimAiReplyWhatsappDispatchExecutionInput,
   type ClaimAiReplyWhatsappDispatchExecutionResult,
   type PrepareAiReplyWhatsappDispatchInput,
   type PrepareWhatsappOutboundDispatchInput,
   type PreparedWhatsappOutboundDispatchResult,
+  type QuarantineStaleAiReplyWhatsappDispatchesResult,
   type RecordWhatsappProviderAcceptanceInput,
   type WhatsappOutboundDispatchFinalizationResult,
   type WhatsappOutboundDispatchIdentity,
@@ -46,6 +48,12 @@ export function claimAiReplyWhatsappDispatchExecution(
   input: ClaimAiReplyWhatsappDispatchExecutionInput,
 ): Promise<ClaimAiReplyWhatsappDispatchExecutionResult> {
   return claimAiReplyWhatsappDispatchExecutionWithRpc(input, rpc);
+}
+
+export function quarantineStaleAiReplyWhatsappDispatches(
+  limit?: number,
+): Promise<QuarantineStaleAiReplyWhatsappDispatchesResult> {
+  return quarantineStaleAiReplyWhatsappDispatchesWithRpc(limit, rpc);
 }
 
 export function getWhatsappOutboundDispatchRecoveryState(

@@ -12,6 +12,7 @@ import {
   claimAiReplyWhatsappDispatchExecutionWithRpc,
   prepareAiReplyWhatsappDispatchWithRpc,
   prepareWhatsappOutboundDispatchWithRpc,
+  quarantineStaleAiReplyWhatsappDispatchesWithRpc,
   recordWhatsappOutboundProviderAcceptanceWithRpc,
 } from "./outbound-dispatch-repository-core.ts";
 
@@ -32,6 +33,10 @@ const AI_REPLY_BINDING_MIGRATION_URL = new URL(
 );
 const AI_REPLY_EXECUTION_CLAIM_MIGRATION_URL = new URL(
   "../../../../supabase/migrations/20260827170826_claim_ai_reply_whatsapp_dispatch_execution.sql",
+  import.meta.url,
+);
+const AI_REPLY_QUARANTINE_MIGRATION_URL = new URL(
+  "../../../../supabase/migrations/20260827171938_quarantine_stale_ai_reply_whatsapp_dispatches.sql",
   import.meta.url,
 );
 const OUTBOUND_DISPATCH_REPOSITORY_URL = new URL(
@@ -72,6 +77,19 @@ function requireAiReplyExecutionClaimFunction(migration: string): string {
 
   assert.ok(claimFunction);
   return claimFunction;
+}
+
+async function readAiReplyQuarantineMigration(): Promise<string> {
+  return readFile(AI_REPLY_QUARANTINE_MIGRATION_URL, "utf8");
+}
+
+function requireAiReplyQuarantineFunction(migration: string): string {
+  const quarantineFunction = migration.match(
+    /create function public\.quarantine_stale_ai_reply_whatsapp_dispatches\([\s\S]*?\n\$\$;/i,
+  )?.[0];
+
+  assert.ok(quarantineFunction);
+  return quarantineFunction;
 }
 
 function createDependencies(
@@ -1090,6 +1108,217 @@ test("AI execution repository hides raw database failures", async () => {
         },
         rpc,
       ),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, SAFE_REPOSITORY_ERROR);
+        assert.equal(error.message.includes(sensitive), false);
+        return true;
+      },
+    );
+  }
+});
+
+test("stale quarantine selects only old AI-bound dispatching rows", async () => {
+  const quarantineFunction = requireAiReplyQuarantineFunction(
+    await readAiReplyQuarantineMigration(),
+  );
+
+  assert.match(
+    quarantineFunction,
+    /dispatch\.source_ai_message_run_id is not null\s+and dispatch\.state = 'dispatching'\s+and dispatch\.updated_at <= operation_timestamp - interval '10 minutes'/i,
+  );
+  assert.doesNotMatch(
+    quarantineFunction,
+    /source_ai_message_run_id is null/i,
+  );
+  for (const untouchedState of [
+    "prepared",
+    "provider_accepted",
+    "persisted",
+  ]) {
+    assert.equal(quarantineFunction.includes(`'${untouchedState}'`), false);
+  }
+  assert.doesNotMatch(
+    quarantineFunction,
+    /where dispatch\.state = 'indeterminate'/i,
+  );
+  assert.doesNotMatch(
+    quarantineFunction,
+    /updated_at > operation_timestamp - interval '10 minutes'/i,
+  );
+});
+
+test("stale quarantine is bounded, deterministic, and concurrency-safe", async () => {
+  const quarantineFunction = requireAiReplyQuarantineFunction(
+    await readAiReplyQuarantineMigration(),
+  );
+
+  assert.match(
+    quarantineFunction,
+    /if p_limit is null or p_limit < 1 or p_limit > 50 then/i,
+  );
+  assert.match(
+    quarantineFunction,
+    /order by dispatch\.updated_at, dispatch\.id\s+limit p_limit\s+for update skip locked/i,
+  );
+  assert.match(
+    quarantineFunction,
+    /with stale_dispatches as materialized/i,
+  );
+  assert.match(
+    quarantineFunction,
+    /from stale_dispatches as stale_dispatch\s+where dispatch\.id = stale_dispatch\.id/i,
+  );
+});
+
+test("stale quarantine changes only state and updated_at", async () => {
+  const quarantineFunction = requireAiReplyQuarantineFunction(
+    await readAiReplyQuarantineMigration(),
+  );
+  const updateStatement = quarantineFunction.match(
+    /update public\.whatsapp_outbound_dispatches as dispatch[\s\S]*?returning 1/i,
+  )?.[0];
+
+  assert.ok(updateStatement);
+  assert.match(updateStatement, /state = 'indeterminate'/i);
+  assert.match(updateStatement, /updated_at = operation_timestamp/i);
+  assert.match(updateStatement, /dispatch\.state = 'dispatching'/i);
+  assert.doesNotMatch(updateStatement, /state = 'prepared'/i);
+
+  for (const immutableField of [
+    "provider_message_id",
+    "provider_accepted_at",
+    "persisted_at",
+    "text_content",
+    "organization_id",
+    "conversation_id",
+    "connection_id",
+    "source_ai_message_run_id",
+  ]) {
+    assert.equal(updateStatement.includes(`${immutableField} =`), false);
+  }
+});
+
+test("stale quarantine returns only a safe bounded count", async () => {
+  const quarantineFunction = requireAiReplyQuarantineFunction(
+    await readAiReplyQuarantineMigration(),
+  );
+  const returnProjection = quarantineFunction.match(
+    /returns table \([\s\S]*?\)\s*language plpgsql/i,
+  )?.[0];
+
+  assert.ok(returnProjection);
+  assert.match(returnProjection, /quarantined_count integer/i);
+  for (const forbidden of [
+    "dispatch_id",
+    "ai_message_run",
+    "organization_id",
+    "conversation_id",
+    "phone",
+    "recipient",
+    "text",
+    "provider",
+    "prompt",
+    "openai",
+  ]) {
+    assert.equal(returnProjection.toLowerCase().includes(forbidden), false);
+  }
+  assert.match(
+    quarantineFunction,
+    /select count\(\*\)::integer\s+into affected_count[\s\S]*return query select affected_count/i,
+  );
+});
+
+test("stale quarantine RPC is service-role-only without new table grants", async () => {
+  const migration = await readAiReplyQuarantineMigration();
+  const quarantineFunction = requireAiReplyQuarantineFunction(migration);
+
+  assert.match(quarantineFunction, /security definer/i);
+  assert.match(quarantineFunction, /set search_path = ''/i);
+  assert.match(
+    migration,
+    /revoke all\s+on function public\.quarantine_stale_ai_reply_whatsapp_dispatches\(integer\)\s+from public, anon, authenticated, service_role/i,
+  );
+  assert.match(
+    migration,
+    /grant execute\s+on function public\.quarantine_stale_ai_reply_whatsapp_dispatches\(integer\)\s+to service_role/i,
+  );
+  assert.doesNotMatch(
+    migration,
+    /grant (select|insert|update|delete|truncate|references|trigger)[\s\S]*on (table )?public\.whatsapp_outbound_dispatches/i,
+  );
+  assert.doesNotMatch(migration, /grant .* to anon/i);
+  assert.doesNotMatch(migration, /grant .* to authenticated/i);
+  assert.doesNotMatch(migration, /disable row level security/i);
+});
+
+test("stale quarantine repository normalizes default, minimum, and maximum limits", async () => {
+  const limits: number[] = [];
+  const rpc = async (_functionName: string, parameters: Record<string, unknown>) => {
+    limits.push(parameters.p_limit as number);
+    return { data: [{ quarantined_count: 0 }], error: null };
+  };
+
+  await quarantineStaleAiReplyWhatsappDispatchesWithRpc(undefined, rpc);
+  await quarantineStaleAiReplyWhatsappDispatchesWithRpc(0, rpc);
+  await quarantineStaleAiReplyWhatsappDispatchesWithRpc(100, rpc);
+  await quarantineStaleAiReplyWhatsappDispatchesWithRpc(12.9, rpc);
+
+  assert.deepEqual(limits, [25, 1, 50, 12]);
+});
+
+test("stale quarantine repository validates the exact bounded result", async () => {
+  const result = await quarantineStaleAiReplyWhatsappDispatchesWithRpc(
+    5,
+    async (functionName, parameters) => {
+      assert.equal(functionName, "quarantine_stale_ai_reply_whatsapp_dispatches");
+      assert.deepEqual(parameters, { p_limit: 5 });
+      return { data: [{ quarantined_count: 3 }], error: null };
+    },
+  );
+  assert.deepEqual(result, { quarantinedCount: 3 });
+
+  for (const data of [
+    [{ quarantined_count: -1 }],
+    [{ quarantined_count: 6 }],
+    [{ quarantined_count: 1.5 }],
+    [{ quarantined_count: "1" }],
+    [{ quarantined_count: 1, dispatch_id: DISPATCH_ID }],
+    [],
+  ]) {
+    await assert.rejects(
+      quarantineStaleAiReplyWhatsappDispatchesWithRpc(
+        5,
+        async () => ({ data, error: null }),
+      ),
+      new RegExp(SAFE_REPOSITORY_ERROR.replaceAll(".", "\\.")),
+    );
+  }
+
+  let rpcCalls = 0;
+  assert.throws(() =>
+    quarantineStaleAiReplyWhatsappDispatchesWithRpc(
+      Number.NaN,
+      async () => {
+        rpcCalls += 1;
+        return { data: null, error: null };
+      },
+    ),
+  );
+  assert.equal(rpcCalls, 0);
+});
+
+test("stale quarantine repository hides raw database errors", async () => {
+  const sensitive = "raw dispatch, customer, and provider database detail";
+
+  for (const rpc of [
+    async () => ({ data: null, error: { message: sensitive } }),
+    async () => {
+      throw new Error(sensitive);
+    },
+  ]) {
+    await assert.rejects(
+      quarantineStaleAiReplyWhatsappDispatchesWithRpc(25, rpc),
       (error: unknown) => {
         assert.ok(error instanceof Error);
         assert.equal(error.message, SAFE_REPOSITORY_ERROR);

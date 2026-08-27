@@ -50,6 +50,10 @@ export type ClaimAiReplyWhatsappDispatchExecutionResult =
       dispatchId: string;
     };
 
+export type QuarantineStaleAiReplyWhatsappDispatchesResult = {
+  quarantinedCount: number;
+};
+
 export type WhatsappOutboundDispatchIdentity = {
   organizationId: string;
   dispatchId: string;
@@ -198,6 +202,40 @@ function normalizeAiReplyExecutionClaimResult(
     outcome: row.outcome,
     dispatchId: row.dispatch_id,
   };
+}
+
+function normalizeQuarantineLimit(limit: number | undefined): number {
+  if (limit === undefined) return 25;
+  if (!Number.isFinite(limit)) throw repositoryFailure();
+
+  return Math.min(50, Math.max(1, Math.trunc(limit)));
+}
+
+function normalizeStaleAiReplyQuarantineResult(
+  data: unknown,
+  limit: number,
+): QuarantineStaleAiReplyWhatsappDispatchesResult {
+  if (
+    !Array.isArray(data) ||
+    data.length !== 1 ||
+    !isRecord(data[0]) ||
+    Object.keys(data[0]).length !== 1
+  ) {
+    throw repositoryFailure();
+  }
+
+  const quarantinedCount = data[0].quarantined_count;
+
+  if (
+    typeof quarantinedCount !== "number" ||
+    !Number.isInteger(quarantinedCount) ||
+    quarantinedCount < 0 ||
+    quarantinedCount > limit
+  ) {
+    throw repositoryFailure();
+  }
+
+  return { quarantinedCount };
 }
 
 function normalizeRecoveryState(
@@ -349,6 +387,20 @@ export function claimAiReplyWhatsappDispatchExecutionWithRpc(
       p_organization_id: input.organizationId,
     },
     normalizeAiReplyExecutionClaimResult,
+  );
+}
+
+export function quarantineStaleAiReplyWhatsappDispatchesWithRpc(
+  limit: number | undefined,
+  rpc: WhatsappOutboundDispatchRpc,
+): Promise<QuarantineStaleAiReplyWhatsappDispatchesResult> {
+  const normalizedLimit = normalizeQuarantineLimit(limit);
+
+  return callRpc(
+    rpc,
+    "quarantine_stale_ai_reply_whatsapp_dispatches",
+    { p_limit: normalizedLimit },
+    (data) => normalizeStaleAiReplyQuarantineResult(data, normalizedLimit),
   );
 }
 
