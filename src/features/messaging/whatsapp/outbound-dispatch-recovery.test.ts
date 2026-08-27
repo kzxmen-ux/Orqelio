@@ -6,6 +6,7 @@ import {
   executeAiReplyWhatsappWithDependencies,
   type AiReplyWhatsappExecutorDependencies,
 } from "./ai-reply-whatsapp-executor-core.ts";
+import { runAiReplyWhatsappExecutionWorkerWithDependencies } from "./ai-reply-whatsapp-execution-worker-core.ts";
 import {
   recoverWhatsappOutboundDispatchWithDependencies,
   sendWhatsappConversationTextDurablyWithDependencies,
@@ -14,6 +15,7 @@ import {
 } from "./outbound-conversation-service-core.ts";
 import {
   claimAiReplyWhatsappDispatchExecutionWithRpc,
+  listActionableAiReplyWhatsappExecutionsWithRpc,
   prepareAiReplyWhatsappDispatchWithRpc,
   prepareWhatsappOutboundDispatchWithRpc,
   quarantineStaleAiReplyWhatsappDispatchesWithRpc,
@@ -27,6 +29,10 @@ const DISPATCH_ID = "44444444-4444-4444-8444-444444444444";
 const MESSAGE_ID = "55555555-5555-4555-8555-555555555555";
 const PROVIDER_MESSAGE_ID = "wamid.safe-provider-id";
 const AI_MESSAGE_RUN_ID = "66666666-6666-4666-8666-666666666666";
+const AI_MESSAGE_RUN_ID_2 = "77777777-7777-4777-8777-777777777777";
+const AI_MESSAGE_RUN_ID_3 = "88888888-8888-4888-8888-888888888888";
+const AI_MESSAGE_RUN_ID_4 = "99999999-9999-4999-8999-999999999999";
+const AI_MESSAGE_RUN_ID_5 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PHONE_NUMBER_ID = "123456789012345";
 const RECIPIENT_WA_ID = "77001234567";
 const SAFE_REPOSITORY_ERROR =
@@ -49,6 +55,18 @@ const AI_REPLY_EXECUTOR_URL = new URL(
 );
 const AI_REPLY_EXECUTOR_CORE_URL = new URL(
   "./ai-reply-whatsapp-executor-core.ts",
+  import.meta.url,
+);
+const AI_REPLY_EXECUTION_DISCOVERY_MIGRATION_URL = new URL(
+  "../../../../supabase/migrations/20260827174407_list_actionable_ai_reply_whatsapp_executions.sql",
+  import.meta.url,
+);
+const AI_REPLY_EXECUTION_WORKER_URL = new URL(
+  "./ai-reply-whatsapp-execution-worker.ts",
+  import.meta.url,
+);
+const AI_REPLY_EXECUTION_WORKER_CORE_URL = new URL(
+  "./ai-reply-whatsapp-execution-worker-core.ts",
   import.meta.url,
 );
 const OUTBOUND_DISPATCH_REPOSITORY_URL = new URL(
@@ -102,6 +120,19 @@ function requireAiReplyQuarantineFunction(migration: string): string {
 
   assert.ok(quarantineFunction);
   return quarantineFunction;
+}
+
+async function readAiReplyExecutionDiscoveryMigration(): Promise<string> {
+  return readFile(AI_REPLY_EXECUTION_DISCOVERY_MIGRATION_URL, "utf8");
+}
+
+function requireAiReplyExecutionDiscoveryFunction(migration: string): string {
+  const discoveryFunction = migration.match(
+    /create function public\.list_actionable_ai_reply_whatsapp_executions\([\s\S]*?\n\$\$;/i,
+  )?.[0];
+
+  assert.ok(discoveryFunction);
+  return discoveryFunction;
 }
 
 function createDependencies(
@@ -1826,6 +1857,471 @@ test("production AI reply executor is server-only and has no automatic wiring", 
     "ai-runtime",
     "/cron/",
     "/route",
+  ]) {
+    assert.equal(source.includes(forbidden), false);
+  }
+});
+
+test("AI reply execution discovery accepts only validated terminal replies", async () => {
+  const discoveryFunction = requireAiReplyExecutionDiscoveryFunction(
+    await readAiReplyExecutionDiscoveryMigration(),
+  );
+
+  assert.match(discoveryFunction, /run\.status = 'decided'/i);
+  assert.match(discoveryFunction, /jsonb_typeof\(run\.decision\) = 'object'/i);
+  assert.match(discoveryFunction, /run\.decision ->> 'action' = 'reply'/i);
+  assert.match(
+    discoveryFunction,
+    /run\.decision - array\['action', 'text'\] = '\{\}'::jsonb/i,
+  );
+  assert.match(
+    discoveryFunction,
+    /jsonb_typeof\(run\.decision -> 'text'\) = 'string'/i,
+  );
+  assert.match(
+    discoveryFunction,
+    /char_length\(run\.decision ->> 'text'\) between 1 and 2000/i,
+  );
+  assert.match(
+    discoveryFunction,
+    /run\.decision ->> 'text' = btrim\(run\.decision ->> 'text'\)/i,
+  );
+  assert.doesNotMatch(discoveryFunction, /run\.status in \('blocked', 'failed'\)/i);
+});
+
+test("discovery returns a stranded no-dispatch reply only with an active WhatsApp connection", async () => {
+  const discoveryFunction = requireAiReplyExecutionDiscoveryFunction(
+    await readAiReplyExecutionDiscoveryMigration(),
+  );
+
+  assert.match(
+    discoveryFunction,
+    /join public\.conversations as conversation\s+on conversation\.id = run\.conversation_id/i,
+  );
+  assert.match(
+    discoveryFunction,
+    /left join public\.whatsapp_outbound_dispatches as dispatch\s+on dispatch\.source_ai_message_run_id = run\.id/i,
+  );
+  assert.match(
+    discoveryFunction,
+    /dispatch\.id is null[\s\S]*conversation\.channel_connection_id is not null[\s\S]*connection\.organization_id = run\.organization_id[\s\S]*connection\.status = 'active'/i,
+  );
+  assert.match(discoveryFunction, /conversation\.channel = 'whatsapp'/i);
+});
+
+test("discovery requires active binding for prepared but not provider_accepted", async () => {
+  const discoveryFunction = requireAiReplyExecutionDiscoveryFunction(
+    await readAiReplyExecutionDiscoveryMigration(),
+  );
+
+  assert.match(
+    discoveryFunction,
+    /dispatch\.id is not null[\s\S]*dispatch\.organization_id = run\.organization_id[\s\S]*dispatch\.conversation_id = run\.conversation_id[\s\S]*dispatch\.connection_id = conversation\.channel_connection_id[\s\S]*connection\.id = dispatch\.connection_id[\s\S]*connection\.organization_id = run\.organization_id/i,
+  );
+  assert.match(
+    discoveryFunction,
+    /\(\s*dispatch\.state = 'prepared'\s+and connection\.status = 'active'\s*\)\s+or dispatch\.state = 'provider_accepted'/i,
+  );
+});
+
+test("discovery excludes unsafe and terminal dispatch states without resetting them", async () => {
+  const discoveryFunction = requireAiReplyExecutionDiscoveryFunction(
+    await readAiReplyExecutionDiscoveryMigration(),
+  );
+
+  for (const excludedState of [
+    "dispatching",
+    "persisted",
+    "indeterminate",
+  ]) {
+    assert.equal(discoveryFunction.includes(`'${excludedState}'`), false);
+  }
+  assert.doesNotMatch(discoveryFunction, /update public\./i);
+  assert.doesNotMatch(discoveryFunction, /set\s+state/i);
+});
+
+test("discovery is tenant-safe, deterministic, bounded, and lock-free", async () => {
+  const discoveryFunction = requireAiReplyExecutionDiscoveryFunction(
+    await readAiReplyExecutionDiscoveryMigration(),
+  );
+
+  assert.match(
+    discoveryFunction,
+    /conversation\.organization_id = run\.organization_id/i,
+  );
+  assert.match(
+    discoveryFunction,
+    /dispatch\.organization_id = run\.organization_id/i,
+  );
+  assert.match(
+    discoveryFunction,
+    /connection\.organization_id = run\.organization_id/i,
+  );
+  assert.match(
+    discoveryFunction,
+    /if p_limit is null or p_limit < 1 or p_limit > 50 then/i,
+  );
+  assert.match(
+    discoveryFunction,
+    /order by run\.updated_at, run\.id\s+limit p_limit/i,
+  );
+  assert.doesNotMatch(discoveryFunction, /for update|skip locked/i);
+});
+
+test("discovery RPC returns only technical identifiers and is service-role-only", async () => {
+  const migration = await readAiReplyExecutionDiscoveryMigration();
+  const discoveryFunction = requireAiReplyExecutionDiscoveryFunction(migration);
+  const returnProjection = discoveryFunction.match(
+    /returns table \([\s\S]*?\)\s*language plpgsql/i,
+  )?.[0];
+
+  assert.ok(returnProjection);
+  assert.match(returnProjection, /organization_id uuid/i);
+  assert.match(returnProjection, /ai_message_run_id uuid/i);
+  for (const forbidden of [
+    "dispatch_id",
+    "provider",
+    "phone",
+    "recipient",
+    "text",
+    "decision",
+    "customer",
+  ]) {
+    assert.equal(returnProjection.toLowerCase().includes(forbidden), false);
+  }
+  assert.match(discoveryFunction, /security definer/i);
+  assert.match(discoveryFunction, /set search_path = ''/i);
+  assert.match(
+    migration,
+    /revoke all\s+on function public\.list_actionable_ai_reply_whatsapp_executions\(integer\)\s+from public, anon, authenticated, service_role/i,
+  );
+  assert.match(
+    migration,
+    /grant execute\s+on function public\.list_actionable_ai_reply_whatsapp_executions\(integer\)\s+to service_role/i,
+  );
+  assert.doesNotMatch(
+    migration,
+    /grant (select|insert|update|delete|truncate|references|trigger)[\s\S]*on (table )?public\./i,
+  );
+  assert.doesNotMatch(migration, /disable row level security/i);
+});
+
+test("actionable AI reply repository normalizes limits and exact safe rows", async () => {
+  const calls: unknown[] = [];
+  const rpc = async (functionName: string, parameters: Record<string, unknown>) => {
+    calls.push({ functionName, parameters });
+    return {
+      data: [
+        {
+          ai_message_run_id: AI_MESSAGE_RUN_ID,
+          organization_id: ORGANIZATION_ID,
+        },
+      ],
+      error: null,
+    };
+  };
+
+  const result = await listActionableAiReplyWhatsappExecutionsWithRpc(
+    undefined,
+    rpc,
+  );
+  await listActionableAiReplyWhatsappExecutionsWithRpc(0, rpc);
+  await listActionableAiReplyWhatsappExecutionsWithRpc(100, rpc);
+  await listActionableAiReplyWhatsappExecutionsWithRpc(12.9, rpc);
+
+  assert.deepEqual(result, [
+    {
+      aiMessageRunId: AI_MESSAGE_RUN_ID,
+      organizationId: ORGANIZATION_ID,
+    },
+  ]);
+  assert.deepEqual(
+    calls.map((call) =>
+      (call as { parameters: { p_limit: number } }).parameters.p_limit,
+    ),
+    [25, 1, 50, 12],
+  );
+  assert.deepEqual(calls[0], {
+    functionName: "list_actionable_ai_reply_whatsapp_executions",
+    parameters: { p_limit: 25 },
+  });
+});
+
+test("actionable AI reply repository rejects malformed and duplicate results", async () => {
+  const validRow = {
+    ai_message_run_id: AI_MESSAGE_RUN_ID,
+    organization_id: ORGANIZATION_ID,
+  };
+
+  for (const data of [
+    null,
+    [validRow, validRow],
+    [{ ...validRow, text: "must not be exposed" }],
+    [{ ...validRow, ai_message_run_id: "invalid" }],
+    [{ ...validRow, organization_id: "invalid" }],
+  ]) {
+    await assert.rejects(
+      listActionableAiReplyWhatsappExecutionsWithRpc(
+        5,
+        async () => ({ data, error: null }),
+      ),
+      new RegExp(SAFE_REPOSITORY_ERROR.replaceAll(".", "\\.")),
+    );
+  }
+
+  await assert.rejects(
+    listActionableAiReplyWhatsappExecutionsWithRpc(1, async () => ({
+      data: [
+        validRow,
+        {
+          ai_message_run_id: AI_MESSAGE_RUN_ID_2,
+          organization_id: ORGANIZATION_ID,
+        },
+      ],
+      error: null,
+    })),
+    new RegExp(SAFE_REPOSITORY_ERROR.replaceAll(".", "\\.")),
+  );
+});
+
+test("actionable AI reply repository rejects non-finite limits before RPC", () => {
+  for (const limit of [Number.NaN, Number.POSITIVE_INFINITY]) {
+    let rpcCalls = 0;
+    assert.throws(() =>
+      listActionableAiReplyWhatsappExecutionsWithRpc(limit, async () => {
+        rpcCalls += 1;
+        return { data: [], error: null };
+      }),
+    );
+    assert.equal(rpcCalls, 0);
+  }
+});
+
+test("actionable AI reply repository hides raw database failures", async () => {
+  const sensitive = "raw Supabase customer and execution detail";
+
+  for (const rpc of [
+    async () => ({ data: null, error: { message: sensitive } }),
+    async () => {
+      throw new Error(sensitive);
+    },
+  ]) {
+    await assert.rejects(
+      listActionableAiReplyWhatsappExecutionsWithRpc(25, rpc),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, SAFE_REPOSITORY_ERROR);
+        assert.equal(error.message.includes(sensitive), false);
+        return true;
+      },
+    );
+  }
+});
+
+test("AI reply worker sequentially executes stranded, prepared, and provider-accepted candidates", async () => {
+  const events: string[] = [];
+  const strandedNoDispatchCandidate = {
+    aiMessageRunId: AI_MESSAGE_RUN_ID,
+    organizationId: ORGANIZATION_ID,
+  };
+  const preparedCandidate = {
+    aiMessageRunId: AI_MESSAGE_RUN_ID_2,
+    organizationId: ORGANIZATION_ID,
+  };
+  const providerAcceptedCandidate = {
+    aiMessageRunId: AI_MESSAGE_RUN_ID_3,
+    organizationId: ORGANIZATION_ID,
+  };
+  const candidates = [
+    strandedNoDispatchCandidate,
+    preparedCandidate,
+    providerAcceptedCandidate,
+    {
+      aiMessageRunId: AI_MESSAGE_RUN_ID_4,
+      organizationId: ORGANIZATION_ID,
+    },
+    {
+      aiMessageRunId: AI_MESSAGE_RUN_ID_5,
+      organizationId: ORGANIZATION_ID,
+    },
+  ];
+  let inFlight = 0;
+  let maxInFlight = 0;
+
+  const result = await runAiReplyWhatsappExecutionWorkerWithDependencies(5, {
+    quarantineStale: async (limit) => {
+      events.push(`quarantine:${limit}`);
+      return { quarantinedCount: 9 };
+    },
+    listActionable: async (limit) => {
+      events.push(`list:${limit}`);
+      return candidates;
+    },
+    executeReply: async (input) => {
+      events.push(`execute:${input.aiMessageRunId}`);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Promise.resolve();
+      inFlight -= 1;
+
+      if (input.aiMessageRunId === preparedCandidate.aiMessageRunId) {
+        throw new Error("raw individual executor detail");
+      }
+
+      const outcome =
+        input.aiMessageRunId === strandedNoDispatchCandidate.aiMessageRunId
+          ? "persisted"
+          : input.aiMessageRunId === providerAcceptedCandidate.aiMessageRunId
+            ? "provider_accepted"
+            : input.aiMessageRunId === AI_MESSAGE_RUN_ID_4
+              ? "already_dispatching"
+              : "indeterminate";
+      return { dispatchId: DISPATCH_ID, outcome };
+    },
+  });
+
+  assert.deepEqual(events, [
+    "quarantine:5",
+    "list:5",
+    ...candidates.map((candidate) => `execute:${candidate.aiMessageRunId}`),
+  ]);
+  assert.equal(maxInFlight, 1);
+  assert.deepEqual(result, {
+    alreadyDispatchingCount: 1,
+    candidateCount: 5,
+    failedCount: 1,
+    indeterminateCount: 1,
+    persistedCount: 1,
+    providerAcceptedCount: 1,
+    quarantinedCount: 9,
+  });
+  assert.deepEqual(Object.keys(result).sort(), [
+    "alreadyDispatchingCount",
+    "candidateCount",
+    "failedCount",
+    "indeterminateCount",
+    "persistedCount",
+    "providerAcceptedCount",
+    "quarantinedCount",
+  ]);
+});
+
+test("AI reply worker always discovers after successful empty quarantine", async () => {
+  const events: string[] = [];
+  const candidate = {
+    aiMessageRunId: AI_MESSAGE_RUN_ID,
+    organizationId: ORGANIZATION_ID,
+  };
+
+  const result = await runAiReplyWhatsappExecutionWorkerWithDependencies(
+    undefined,
+    {
+      quarantineStale: async () => {
+        events.push("quarantine");
+        return { quarantinedCount: 0 };
+      },
+      listActionable: async () => {
+        events.push("list");
+        return [candidate];
+      },
+      executeReply: async (input) => {
+        events.push(`execute:${input.aiMessageRunId}`);
+        return { dispatchId: DISPATCH_ID, outcome: "persisted" };
+      },
+    },
+  );
+
+  assert.deepEqual(events, ["quarantine", "list", `execute:${AI_MESSAGE_RUN_ID}`]);
+  assert.equal(result.quarantinedCount, 0);
+  assert.equal(result.candidateCount, 1);
+  assert.equal(result.persistedCount, 1);
+});
+
+test("AI reply worker quarantine infrastructure failure aborts safely", async () => {
+  const sensitive = "raw quarantine database detail";
+  const events: string[] = [];
+
+  await assert.rejects(
+    runAiReplyWhatsappExecutionWorkerWithDependencies(25, {
+      quarantineStale: async () => {
+        events.push("quarantine");
+        throw new Error(sensitive);
+      },
+      listActionable: async () => {
+        events.push("list");
+        return [];
+      },
+      executeReply: async () => {
+        events.push("execute");
+        return { dispatchId: DISPATCH_ID, outcome: "persisted" };
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, "AI reply WhatsApp execution worker failed.");
+      assert.equal(error.message.includes(sensitive), false);
+      return true;
+    },
+  );
+  assert.deepEqual(events, ["quarantine"]);
+});
+
+test("AI reply worker discovery infrastructure failure aborts safely", async () => {
+  const sensitive = "raw discovery database detail";
+  const events: string[] = [];
+
+  await assert.rejects(
+    runAiReplyWhatsappExecutionWorkerWithDependencies(25, {
+      quarantineStale: async () => {
+        events.push("quarantine");
+        return { quarantinedCount: 1 };
+      },
+      listActionable: async () => {
+        events.push("list");
+        throw new Error(sensitive);
+      },
+      executeReply: async () => {
+        events.push("execute");
+        return { dispatchId: DISPATCH_ID, outcome: "persisted" };
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, "AI reply WhatsApp execution worker failed.");
+      assert.equal(error.message.includes(sensitive), false);
+      return true;
+    },
+  );
+  assert.deepEqual(events, ["quarantine", "list"]);
+});
+
+test("production AI reply worker uses existing authorities without automatic wiring", async () => {
+  const wrapper = await readFile(AI_REPLY_EXECUTION_WORKER_URL, "utf8");
+  const core = await readFile(AI_REPLY_EXECUTION_WORKER_CORE_URL, "utf8");
+  const source = `${wrapper}\n${core}`;
+
+  assert.match(wrapper, /import "server-only"/);
+  assert.match(
+    wrapper,
+    /import \{ executeAiReplyWhatsapp \} from "\.\/ai-reply-whatsapp-executor"/,
+  );
+  assert.match(wrapper, /quarantineStaleAiReplyWhatsappDispatches/);
+  assert.match(wrapper, /listActionableAiReplyWhatsappExecutions/);
+  assert.doesNotMatch(core, /Promise\.all/);
+  assert.doesNotMatch(wrapper, /executeAiReplyWhatsapp\s*\(/);
+
+  for (const forbidden of [
+    "outbound-text-sender",
+    "sendWhatsappTextMessage",
+    "graph.facebook",
+    "fetch(",
+    "createPrivilegedClient",
+    ".from(",
+    "inbox-processor",
+    "ai-runtime",
+    "/route",
+    "/cron/",
+    "pg_cron",
   ]) {
     assert.equal(source.includes(forbidden), false);
   }

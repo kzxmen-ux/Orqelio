@@ -54,6 +54,11 @@ export type QuarantineStaleAiReplyWhatsappDispatchesResult = {
   quarantinedCount: number;
 };
 
+export type ActionableAiReplyWhatsappExecution = Readonly<{
+  organizationId: string;
+  aiMessageRunId: string;
+}>;
+
 export type WhatsappOutboundDispatchIdentity = {
   organizationId: string;
   dispatchId: string;
@@ -204,7 +209,7 @@ function normalizeAiReplyExecutionClaimResult(
   };
 }
 
-function normalizeQuarantineLimit(limit: number | undefined): number {
+function normalizeBoundedLimit(limit: number | undefined): number {
   if (limit === undefined) return 25;
   if (!Number.isFinite(limit)) throw repositoryFailure();
 
@@ -236,6 +241,35 @@ function normalizeStaleAiReplyQuarantineResult(
   }
 
   return { quarantinedCount };
+}
+
+function normalizeActionableAiReplyWhatsappExecutions(
+  data: unknown,
+  limit: number,
+): readonly ActionableAiReplyWhatsappExecution[] {
+  if (!Array.isArray(data) || data.length > limit) {
+    throw repositoryFailure();
+  }
+
+  const seenAiMessageRunIds = new Set<string>();
+
+  return data.map((row) => {
+    if (
+      !isRecord(row) ||
+      Object.keys(row).length !== 2 ||
+      !isUuid(row.organization_id) ||
+      !isUuid(row.ai_message_run_id) ||
+      seenAiMessageRunIds.has(row.ai_message_run_id)
+    ) {
+      throw repositoryFailure();
+    }
+
+    seenAiMessageRunIds.add(row.ai_message_run_id);
+    return {
+      aiMessageRunId: row.ai_message_run_id,
+      organizationId: row.organization_id,
+    };
+  });
 }
 
 function normalizeRecoveryState(
@@ -394,13 +428,28 @@ export function quarantineStaleAiReplyWhatsappDispatchesWithRpc(
   limit: number | undefined,
   rpc: WhatsappOutboundDispatchRpc,
 ): Promise<QuarantineStaleAiReplyWhatsappDispatchesResult> {
-  const normalizedLimit = normalizeQuarantineLimit(limit);
+  const normalizedLimit = normalizeBoundedLimit(limit);
 
   return callRpc(
     rpc,
     "quarantine_stale_ai_reply_whatsapp_dispatches",
     { p_limit: normalizedLimit },
     (data) => normalizeStaleAiReplyQuarantineResult(data, normalizedLimit),
+  );
+}
+
+export function listActionableAiReplyWhatsappExecutionsWithRpc(
+  limit: number | undefined,
+  rpc: WhatsappOutboundDispatchRpc,
+): Promise<readonly ActionableAiReplyWhatsappExecution[]> {
+  const normalizedLimit = normalizeBoundedLimit(limit);
+
+  return callRpc(
+    rpc,
+    "list_actionable_ai_reply_whatsapp_executions",
+    { p_limit: normalizedLimit },
+    (data) =>
+      normalizeActionableAiReplyWhatsappExecutions(data, normalizedLimit),
   );
 }
 

@@ -6,12 +6,14 @@ import {
   claimAiReplyWhatsappDispatchExecutionWithRpc,
   finalizeWhatsappOutboundDispatchWithRpc,
   getWhatsappOutboundDispatchRecoveryStateWithRpc,
+  listActionableAiReplyWhatsappExecutionsWithRpc,
   markWhatsappOutboundDispatchIndeterminateWithRpc,
   markWhatsappOutboundDispatchingWithRpc,
   prepareAiReplyWhatsappDispatchWithRpc,
   prepareWhatsappOutboundDispatchWithRpc,
   quarantineStaleAiReplyWhatsappDispatchesWithRpc,
   recordWhatsappOutboundProviderAcceptanceWithRpc,
+  type ActionableAiReplyWhatsappExecution,
   type ClaimAiReplyWhatsappDispatchExecutionInput,
   type ClaimAiReplyWhatsappDispatchExecutionResult,
   type PrepareAiReplyWhatsappDispatchInput,
@@ -54,6 +56,12 @@ export function quarantineStaleAiReplyWhatsappDispatches(
   limit?: number,
 ): Promise<QuarantineStaleAiReplyWhatsappDispatchesResult> {
   return quarantineStaleAiReplyWhatsappDispatchesWithRpc(limit, rpc);
+}
+
+export function listActionableAiReplyWhatsappExecutions(
+  limit?: number,
+): Promise<readonly ActionableAiReplyWhatsappExecution[]> {
+  return listActionableAiReplyWhatsappExecutionsWithRpc(limit, rpc);
 }
 
 export function getWhatsappOutboundDispatchRecoveryState(
