@@ -9,6 +9,7 @@ import {
   type WhatsappDurableOutboundConversationDependencies,
 } from "./outbound-conversation-service-core.ts";
 import {
+  claimAiReplyWhatsappDispatchExecutionWithRpc,
   prepareAiReplyWhatsappDispatchWithRpc,
   prepareWhatsappOutboundDispatchWithRpc,
   recordWhatsappOutboundProviderAcceptanceWithRpc,
@@ -21,10 +22,16 @@ const DISPATCH_ID = "44444444-4444-4444-8444-444444444444";
 const MESSAGE_ID = "55555555-5555-4555-8555-555555555555";
 const PROVIDER_MESSAGE_ID = "wamid.safe-provider-id";
 const AI_MESSAGE_RUN_ID = "66666666-6666-4666-8666-666666666666";
+const PHONE_NUMBER_ID = "123456789012345";
+const RECIPIENT_WA_ID = "77001234567";
 const SAFE_REPOSITORY_ERROR =
   "WhatsApp outbound dispatch repository operation failed.";
 const AI_REPLY_BINDING_MIGRATION_URL = new URL(
   "../../../../supabase/migrations/20260827142909_bind_ai_reply_to_whatsapp_dispatch.sql",
+  import.meta.url,
+);
+const AI_REPLY_EXECUTION_CLAIM_MIGRATION_URL = new URL(
+  "../../../../supabase/migrations/20260827170826_claim_ai_reply_whatsapp_dispatch_execution.sql",
   import.meta.url,
 );
 const OUTBOUND_DISPATCH_REPOSITORY_URL = new URL(
@@ -52,6 +59,19 @@ function requireAiReplyPrepareFunction(migration: string): string {
 
   assert.ok(prepareFunction);
   return prepareFunction;
+}
+
+async function readAiReplyExecutionClaimMigration(): Promise<string> {
+  return readFile(AI_REPLY_EXECUTION_CLAIM_MIGRATION_URL, "utf8");
+}
+
+function requireAiReplyExecutionClaimFunction(migration: string): string {
+  const claimFunction = migration.match(
+    /create function public\.claim_ai_reply_whatsapp_dispatch_execution\([\s\S]*?\n\$\$;/i,
+  )?.[0];
+
+  assert.ok(claimFunction);
+  return claimFunction;
 }
 
 function createDependencies(
@@ -744,12 +764,338 @@ test("AI reply repository adds no sender, Meta, Graph, or CRM dependency", async
   for (const forbidden of [
     "sendwhatsappconversationtext",
     "sendtextmessage",
-    "meta",
     "graph.facebook",
     "fetch(",
     "crm",
     "booking provider",
   ]) {
     assert.equal(source.includes(forbidden), false);
+  }
+  assert.doesNotMatch(source, /import [^;]*meta/);
+});
+
+test("AI execution claim validates the bound decided reply and send routing", async () => {
+  const claimFunction = requireAiReplyExecutionClaimFunction(
+    await readAiReplyExecutionClaimMigration(),
+  );
+
+  assert.match(
+    claimFunction,
+    /public\.claim_ai_reply_whatsapp_dispatch_execution\(\s*p_organization_id uuid,\s*p_ai_message_run_id uuid\s*\)/i,
+  );
+  assert.doesNotMatch(claimFunction, /p_text|p_phone|p_recipient/i);
+  assert.match(
+    claimFunction,
+    /dispatch\.source_ai_message_run_id = p_ai_message_run_id/i,
+  );
+  assert.match(
+    claimFunction,
+    /dispatch\.organization_id = p_organization_id/i,
+  );
+  assert.match(claimFunction, /run\.id = p_ai_message_run_id/i);
+  assert.match(claimFunction, /run\.organization_id = p_organization_id/i);
+  assert.match(claimFunction, /run\.status = 'decided'/i);
+  assert.match(claimFunction, /jsonb_typeof\(run\.decision\) = 'object'/i);
+  assert.match(claimFunction, /run\.decision ->> 'action' = 'reply'/i);
+  assert.match(
+    claimFunction,
+    /conversation\.id = dispatch\.conversation_id[\s\S]*conversation\.organization_id = p_organization_id[\s\S]*conversation\.channel = 'whatsapp'/i,
+  );
+  assert.match(
+    claimFunction,
+    /connection\.id = dispatch\.connection_id[\s\S]*connection\.organization_id = p_organization_id[\s\S]*connection\.id = conversation\.channel_connection_id[\s\S]*connection\.status = 'active'/i,
+  );
+  assert.match(
+    claimFunction,
+    /conversation\.external_participant_id is not null/i,
+  );
+  assert.match(claimFunction, /connection\.phone_number_id is not null/i);
+});
+
+test("AI execution claim has exactly one prepared-to-dispatching winner", async () => {
+  const claimFunction = requireAiReplyExecutionClaimFunction(
+    await readAiReplyExecutionClaimMigration(),
+  );
+
+  assert.match(
+    claimFunction,
+    /for update of dispatch\s+for share of run, conversation, connection/i,
+  );
+  assert.match(
+    claimFunction,
+    /if bound_dispatch_state = 'prepared' then[\s\S]*update public\.whatsapp_outbound_dispatches as dispatch[\s\S]*state = 'dispatching'[\s\S]*where dispatch\.id = bound_dispatch_id\s+and dispatch\.state = 'prepared'/i,
+  );
+  assert.match(
+    claimFunction,
+    /claim_outcome := 'claimed'/i,
+  );
+  assert.match(
+    claimFunction,
+    /bound_dispatch_state = 'dispatching'[\s\S]*claim_outcome := 'already_dispatching'/i,
+  );
+  assert.doesNotMatch(claimFunction, /set\s+state = 'prepared'/i);
+});
+
+test("AI execution claim preserves every existing non-prepared state", async () => {
+  const claimFunction = requireAiReplyExecutionClaimFunction(
+    await readAiReplyExecutionClaimMigration(),
+  );
+
+  assert.match(
+    claimFunction,
+    /bound_dispatch_state in \(\s*'provider_accepted',\s*'persisted',\s*'indeterminate'\s*\)[\s\S]*claim_outcome := bound_dispatch_state/i,
+  );
+
+  const updateStatement = claimFunction.match(
+    /update public\.whatsapp_outbound_dispatches as dispatch[\s\S]*?and dispatch\.state = 'prepared';/i,
+  )?.[0];
+
+  assert.ok(updateStatement);
+  assert.match(updateStatement, /state = 'dispatching'/i);
+  assert.match(updateStatement, /updated_at = clock_timestamp\(\)/i);
+  for (const immutableField of [
+    "text_content",
+    "source_ai_message_run_id",
+    "organization_id",
+    "conversation_id",
+    "connection_id",
+    "provider_message_id",
+    "provider_accepted_at",
+  ]) {
+    assert.equal(updateStatement.includes(`${immutableField} =`), false);
+  }
+});
+
+test("only the one claim winner receives bound routing and dispatch text", async () => {
+  const claimFunction = requireAiReplyExecutionClaimFunction(
+    await readAiReplyExecutionClaimMigration(),
+  );
+
+  assert.match(
+    claimFunction,
+    /connection\.phone_number_id,\s*conversation\.external_participant_id,\s*dispatch\.text_content/i,
+  );
+  assert.doesNotMatch(claimFunction, /run\.decision ->> 'text'/i);
+  assert.match(
+    claimFunction,
+    /case when claim_outcome = 'claimed' then bound_phone_number_id else null end/i,
+  );
+  assert.match(
+    claimFunction,
+    /case when claim_outcome = 'claimed' then bound_recipient_wa_id else null end/i,
+  );
+  assert.match(
+    claimFunction,
+    /case when claim_outcome = 'claimed' then bound_text else null end/i,
+  );
+
+  const returnProjection = claimFunction.match(
+    /returns table \([\s\S]*?\)\s*language plpgsql/i,
+  )?.[0];
+  assert.ok(returnProjection);
+  for (const field of [
+    "outcome text",
+    "dispatch_id uuid",
+    "phone_number_id text",
+    "recipient_wa_id text",
+    "text text",
+  ]) {
+    assert.ok(returnProjection.toLowerCase().includes(field));
+  }
+  for (const forbidden of [
+    "access_token",
+    "waba",
+    "provider_message_id",
+    "decision",
+    "prompt",
+    "webhook",
+  ]) {
+    assert.equal(returnProjection.toLowerCase().includes(forbidden), false);
+  }
+});
+
+test("AI execution claim RPC remains service-role-only without table grants", async () => {
+  const migration = await readAiReplyExecutionClaimMigration();
+  const claimFunction = requireAiReplyExecutionClaimFunction(migration);
+
+  assert.match(claimFunction, /security definer/i);
+  assert.match(claimFunction, /set search_path = ''/i);
+  assert.match(
+    migration,
+    /revoke all\s+on function public\.claim_ai_reply_whatsapp_dispatch_execution\(uuid, uuid\)\s+from public, anon, authenticated, service_role/i,
+  );
+  assert.match(
+    migration,
+    /grant execute\s+on function public\.claim_ai_reply_whatsapp_dispatch_execution\(uuid, uuid\)\s+to service_role/i,
+  );
+  assert.doesNotMatch(
+    migration,
+    /grant (select|insert|update|delete|truncate|references|trigger)[\s\S]*on (table )?public\.whatsapp_outbound_dispatches/i,
+  );
+  assert.doesNotMatch(migration, /grant .* to anon/i);
+  assert.doesNotMatch(migration, /grant .* to authenticated/i);
+  assert.doesNotMatch(migration, /disable row level security/i);
+});
+
+test("AI execution repository returns claimed context without caller-controlled text", async () => {
+  const calls: unknown[] = [];
+  const inputWithAlternateText = {
+    aiMessageRunId: AI_MESSAGE_RUN_ID,
+    organizationId: ORGANIZATION_ID,
+    text: "caller must not control this",
+  };
+
+  const result = await claimAiReplyWhatsappDispatchExecutionWithRpc(
+    inputWithAlternateText,
+    async (functionName, parameters) => {
+      calls.push({ functionName, parameters });
+      return {
+        data: [
+          {
+            dispatch_id: DISPATCH_ID,
+            outcome: "claimed",
+            phone_number_id: PHONE_NUMBER_ID,
+            provider_message_id: "must-not-return",
+            recipient_wa_id: RECIPIENT_WA_ID,
+            text: "Stored immutable AI reply",
+          },
+        ],
+        error: null,
+      };
+    },
+  );
+
+  assert.deepEqual(calls, [
+    {
+      functionName: "claim_ai_reply_whatsapp_dispatch_execution",
+      parameters: {
+        p_ai_message_run_id: AI_MESSAGE_RUN_ID,
+        p_organization_id: ORGANIZATION_ID,
+      },
+    },
+  ]);
+  assert.deepEqual(result, {
+    outcome: "claimed",
+    dispatchId: DISPATCH_ID,
+    phoneNumberId: PHONE_NUMBER_ID,
+    recipientWaId: RECIPIENT_WA_ID,
+    text: "Stored immutable AI reply",
+  });
+  assert.equal(JSON.stringify(result).includes("must-not-return"), false);
+});
+
+test("AI execution repository maps every state-only outcome without send context", async () => {
+  for (const outcome of [
+    "already_dispatching",
+    "provider_accepted",
+    "persisted",
+    "indeterminate",
+  ] as const) {
+    const result = await claimAiReplyWhatsappDispatchExecutionWithRpc(
+      {
+        aiMessageRunId: AI_MESSAGE_RUN_ID,
+        organizationId: ORGANIZATION_ID,
+      },
+      async () => ({
+        data: [
+          {
+            dispatch_id: DISPATCH_ID,
+            outcome,
+            phone_number_id: null,
+            recipient_wa_id: null,
+            text: null,
+          },
+        ],
+        error: null,
+      }),
+    );
+
+    assert.deepEqual(result, { outcome, dispatchId: DISPATCH_ID });
+  }
+});
+
+test("AI execution repository rejects malformed or unsafe claim results", async () => {
+  const safeInput = {
+    aiMessageRunId: AI_MESSAGE_RUN_ID,
+    organizationId: ORGANIZATION_ID,
+  };
+  const malformedRows = [
+    {
+      dispatch_id: DISPATCH_ID,
+      outcome: "already_dispatching",
+      phone_number_id: PHONE_NUMBER_ID,
+      recipient_wa_id: null,
+      text: null,
+    },
+    {
+      dispatch_id: DISPATCH_ID,
+      outcome: "claimed",
+      phone_number_id: "not-decimal",
+      recipient_wa_id: RECIPIENT_WA_ID,
+      text: "Safe text",
+    },
+    {
+      dispatch_id: DISPATCH_ID,
+      outcome: "claimed",
+      phone_number_id: PHONE_NUMBER_ID,
+      recipient_wa_id: RECIPIENT_WA_ID,
+      text: " ",
+    },
+    {
+      dispatch_id: DISPATCH_ID,
+      outcome: "unknown",
+      phone_number_id: null,
+      recipient_wa_id: null,
+      text: null,
+    },
+  ];
+
+  for (const row of malformedRows) {
+    await assert.rejects(
+      claimAiReplyWhatsappDispatchExecutionWithRpc(
+        safeInput,
+        async () => ({ data: [row], error: null }),
+      ),
+      new RegExp(SAFE_REPOSITORY_ERROR.replaceAll(".", "\\.")),
+    );
+  }
+
+  let rpcCalls = 0;
+  assert.throws(() =>
+    claimAiReplyWhatsappDispatchExecutionWithRpc(
+      { aiMessageRunId: "invalid", organizationId: ORGANIZATION_ID },
+      async () => {
+        rpcCalls += 1;
+        return { data: null, error: null };
+      },
+    ),
+  );
+  assert.equal(rpcCalls, 0);
+});
+
+test("AI execution repository hides raw database failures", async () => {
+  const sensitive = "raw database, customer, and provider detail";
+
+  for (const rpc of [
+    async () => ({ data: null, error: { message: sensitive } }),
+    async () => {
+      throw new Error(sensitive);
+    },
+  ]) {
+    await assert.rejects(
+      claimAiReplyWhatsappDispatchExecutionWithRpc(
+        {
+          aiMessageRunId: AI_MESSAGE_RUN_ID,
+          organizationId: ORGANIZATION_ID,
+        },
+        rpc,
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, SAFE_REPOSITORY_ERROR);
+        assert.equal(error.message.includes(sensitive), false);
+        return true;
+      },
+    );
   }
 });

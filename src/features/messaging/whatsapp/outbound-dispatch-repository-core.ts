@@ -1,5 +1,7 @@
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const META_ROUTING_IDENTIFIER_PATTERN = /^[0-9]{1,64}$/;
+const AI_REPLY_TEXT_MAX_LENGTH = 2_000;
 const PROVIDER_MESSAGE_ID_MAX_LENGTH = 255;
 const SAFE_ERROR_MESSAGE =
   "WhatsApp outbound dispatch repository operation failed.";
@@ -25,6 +27,28 @@ export type PrepareAiReplyWhatsappDispatchInput = {
   organizationId: string;
   aiMessageRunId: string;
 };
+
+export type ClaimAiReplyWhatsappDispatchExecutionInput = {
+  organizationId: string;
+  aiMessageRunId: string;
+};
+
+export type ClaimAiReplyWhatsappDispatchExecutionResult =
+  | {
+      outcome: "claimed";
+      dispatchId: string;
+      phoneNumberId: string;
+      recipientWaId: string;
+      text: string;
+    }
+  | {
+      outcome:
+        | "already_dispatching"
+        | "provider_accepted"
+        | "persisted"
+        | "indeterminate";
+      dispatchId: string;
+    };
 
 export type WhatsappOutboundDispatchIdentity = {
   organizationId: string;
@@ -120,6 +144,60 @@ function normalizePreparedDispatchResult(
   }
 
   return { dispatchId: data[0].dispatch_id };
+}
+
+function normalizeAiReplyExecutionClaimResult(
+  data: unknown,
+): ClaimAiReplyWhatsappDispatchExecutionResult {
+  if (!Array.isArray(data) || data.length !== 1 || !isRecord(data[0])) {
+    throw repositoryFailure();
+  }
+
+  const row = data[0];
+
+  if (!isUuid(row.dispatch_id)) {
+    throw repositoryFailure();
+  }
+
+  if (row.outcome === "claimed") {
+    if (
+      typeof row.phone_number_id !== "string" ||
+      !META_ROUTING_IDENTIFIER_PATTERN.test(row.phone_number_id) ||
+      typeof row.recipient_wa_id !== "string" ||
+      !META_ROUTING_IDENTIFIER_PATTERN.test(row.recipient_wa_id) ||
+      typeof row.text !== "string" ||
+      row.text.length < 1 ||
+      row.text.length > AI_REPLY_TEXT_MAX_LENGTH ||
+      row.text !== row.text.trim()
+    ) {
+      throw repositoryFailure();
+    }
+
+    return {
+      outcome: "claimed",
+      dispatchId: row.dispatch_id,
+      phoneNumberId: row.phone_number_id,
+      recipientWaId: row.recipient_wa_id,
+      text: row.text,
+    };
+  }
+
+  if (
+    (row.outcome !== "already_dispatching" &&
+      row.outcome !== "provider_accepted" &&
+      row.outcome !== "persisted" &&
+      row.outcome !== "indeterminate") ||
+    row.phone_number_id !== null ||
+    row.recipient_wa_id !== null ||
+    row.text !== null
+  ) {
+    throw repositoryFailure();
+  }
+
+  return {
+    outcome: row.outcome,
+    dispatchId: row.dispatch_id,
+  };
 }
 
 function normalizeRecoveryState(
@@ -248,6 +326,29 @@ export function prepareAiReplyWhatsappDispatchWithRpc(
       p_organization_id: input.organizationId,
     },
     normalizeDispatchResult,
+  );
+}
+
+export function claimAiReplyWhatsappDispatchExecutionWithRpc(
+  input: ClaimAiReplyWhatsappDispatchExecutionInput,
+  rpc: WhatsappOutboundDispatchRpc,
+): Promise<ClaimAiReplyWhatsappDispatchExecutionResult> {
+  if (
+    !isRecord(input) ||
+    !isUuid(input.organizationId) ||
+    !isUuid(input.aiMessageRunId)
+  ) {
+    throw repositoryFailure();
+  }
+
+  return callRpc(
+    rpc,
+    "claim_ai_reply_whatsapp_dispatch_execution",
+    {
+      p_ai_message_run_id: input.aiMessageRunId,
+      p_organization_id: input.organizationId,
+    },
+    normalizeAiReplyExecutionClaimResult,
   );
 }
 

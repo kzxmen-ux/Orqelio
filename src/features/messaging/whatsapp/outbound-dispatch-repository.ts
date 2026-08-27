@@ -3,6 +3,7 @@ import "server-only";
 import { createPrivilegedClient } from "@/lib/supabase/privileged";
 
 import {
+  claimAiReplyWhatsappDispatchExecutionWithRpc,
   finalizeWhatsappOutboundDispatchWithRpc,
   getWhatsappOutboundDispatchRecoveryStateWithRpc,
   markWhatsappOutboundDispatchIndeterminateWithRpc,
@@ -10,6 +11,8 @@ import {
   prepareAiReplyWhatsappDispatchWithRpc,
   prepareWhatsappOutboundDispatchWithRpc,
   recordWhatsappOutboundProviderAcceptanceWithRpc,
+  type ClaimAiReplyWhatsappDispatchExecutionInput,
+  type ClaimAiReplyWhatsappDispatchExecutionResult,
   type PrepareAiReplyWhatsappDispatchInput,
   type PrepareWhatsappOutboundDispatchInput,
   type PreparedWhatsappOutboundDispatchResult,
@@ -37,6 +40,12 @@ export function prepareAiReplyWhatsappDispatch(
   input: PrepareAiReplyWhatsappDispatchInput,
 ): Promise<WhatsappOutboundDispatchResult> {
   return prepareAiReplyWhatsappDispatchWithRpc(input, rpc);
+}
+
+export function claimAiReplyWhatsappDispatchExecution(
+  input: ClaimAiReplyWhatsappDispatchExecutionInput,
+): Promise<ClaimAiReplyWhatsappDispatchExecutionResult> {
+  return claimAiReplyWhatsappDispatchExecutionWithRpc(input, rpc);
 }
 
 export function getWhatsappOutboundDispatchRecoveryState(
