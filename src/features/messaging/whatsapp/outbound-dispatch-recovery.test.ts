@@ -9,6 +9,7 @@ import {
   type WhatsappDurableOutboundConversationDependencies,
 } from "./outbound-conversation-service-core.ts";
 import {
+  prepareAiReplyWhatsappDispatchWithRpc,
   prepareWhatsappOutboundDispatchWithRpc,
   recordWhatsappOutboundProviderAcceptanceWithRpc,
 } from "./outbound-dispatch-repository-core.ts";
@@ -19,11 +20,39 @@ const CONNECTION_ID = "33333333-3333-4333-8333-333333333333";
 const DISPATCH_ID = "44444444-4444-4444-8444-444444444444";
 const MESSAGE_ID = "55555555-5555-4555-8555-555555555555";
 const PROVIDER_MESSAGE_ID = "wamid.safe-provider-id";
+const AI_MESSAGE_RUN_ID = "66666666-6666-4666-8666-666666666666";
+const SAFE_REPOSITORY_ERROR =
+  "WhatsApp outbound dispatch repository operation failed.";
+const AI_REPLY_BINDING_MIGRATION_URL = new URL(
+  "../../../../supabase/migrations/20260827142909_bind_ai_reply_to_whatsapp_dispatch.sql",
+  import.meta.url,
+);
+const OUTBOUND_DISPATCH_REPOSITORY_URL = new URL(
+  "./outbound-dispatch-repository.ts",
+  import.meta.url,
+);
+const OUTBOUND_DISPATCH_REPOSITORY_CORE_URL = new URL(
+  "./outbound-dispatch-repository-core.ts",
+  import.meta.url,
+);
 const SAFE_INPUT = {
   conversationId: CONVERSATION_ID,
   organizationId: ORGANIZATION_ID,
   text: "Safe outbound text",
 };
+
+async function readAiReplyBindingMigration(): Promise<string> {
+  return readFile(AI_REPLY_BINDING_MIGRATION_URL, "utf8");
+}
+
+function requireAiReplyPrepareFunction(migration: string): string {
+  const prepareFunction = migration.match(
+    /create function public\.prepare_ai_reply_whatsapp_dispatch\([\s\S]*?\n\$\$;/i,
+  )?.[0];
+
+  assert.ok(prepareFunction);
+  return prepareFunction;
+}
 
 function createDependencies(
   events: string[],
@@ -411,4 +440,316 @@ test("migration defines tenant-safe journal, transitions, recovery and grants", 
   assert.match(sql, /dispatch\.organization_id = p_organization_id[\s\S]*dispatch\.connection_id = p_connection_id[\s\S]*dispatch\.provider_message_id = p_provider_message_id/i);
   assert.match(sql, /recovery_dispatch_state = 'provider_accepted'[\s\S]*finalize_whatsapp_outbound_dispatch/i);
   assert.doesNotMatch(sql, /recipient_wa_id|phone_number_id|waba_id|access_token|raw_response/i);
+});
+
+test("AI reply binding adds a nullable restrictive FK with one-dispatch uniqueness", async () => {
+  const migration = await readAiReplyBindingMigration();
+  const existingOutboundMigration = await readFile(
+    new URL(
+      "../../../../supabase/migrations/20260822205023_whatsapp_outbound_dispatch_recovery.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const columnDefinition = migration.match(
+    /add column source_ai_message_run_id uuid[\s\S]*?on delete restrict;/i,
+  )?.[0];
+
+  assert.ok(columnDefinition);
+  assert.match(
+    columnDefinition,
+    /references public\.ai_message_runs \(id\) on delete restrict/i,
+  );
+  assert.doesNotMatch(columnDefinition, /not null/i);
+  assert.match(
+    migration,
+    /constraint whatsapp_outbound_dispatches_source_ai_message_run_unique[\s\S]*unique \(source_ai_message_run_id\)/i,
+  );
+  assert.doesNotMatch(
+    migration,
+    /check \(source_ai_message_run_id is not null\)/i,
+  );
+  assert.match(
+    existingOutboundMigration,
+    /insert into public\.whatsapp_outbound_dispatches \(\s*organization_id,\s*conversation_id,\s*connection_id,\s*text_content\s*\)/i,
+  );
+});
+
+test("AI reply prepare derives validated text and rejects every non-reply source", async () => {
+  const prepareFunction = requireAiReplyPrepareFunction(
+    await readAiReplyBindingMigration(),
+  );
+
+  assert.match(
+    prepareFunction,
+    /public\.prepare_ai_reply_whatsapp_dispatch\(\s*p_organization_id uuid,\s*p_ai_message_run_id uuid\s*\)/i,
+  );
+  assert.doesNotMatch(prepareFunction, /p_text|p_reply/i);
+  assert.match(prepareFunction, /run\.id = p_ai_message_run_id/i);
+  assert.match(prepareFunction, /run\.organization_id = p_organization_id/i);
+  assert.match(prepareFunction, /run\.status = 'decided'/i);
+  assert.match(prepareFunction, /jsonb_typeof\(run\.decision\) = 'object'/i);
+  assert.match(prepareFunction, /run\.decision ->> 'action' = 'reply'/i);
+  assert.match(
+    prepareFunction,
+    /run\.decision - array\['action', 'text'\] = '\{\}'::jsonb/i,
+  );
+  assert.match(
+    prepareFunction,
+    /jsonb_typeof\(run\.decision -> 'text'\) = 'string'/i,
+  );
+  assert.match(
+    prepareFunction,
+    /char_length\(run\.decision ->> 'text'\) between 1 and 2000/i,
+  );
+  assert.match(
+    prepareFunction,
+    /run\.decision ->> 'text' = btrim\(run\.decision ->> 'text'\)/i,
+  );
+
+  for (const rejectedSource of [
+    "pending",
+    "processing",
+    "blocked",
+    "failed",
+    "booking_action_required",
+    "handoff",
+    "no_safe_answer",
+  ]) {
+    assert.equal(prepareFunction.includes(`= '${rejectedSource}'`), false);
+  }
+});
+
+test("AI reply prepare validates tenant, WhatsApp conversation, and active connection", async () => {
+  const prepareFunction = requireAiReplyPrepareFunction(
+    await readAiReplyBindingMigration(),
+  );
+
+  assert.match(
+    prepareFunction,
+    /conversation\.id = run\.conversation_id/i,
+  );
+  assert.match(
+    prepareFunction,
+    /conversation\.organization_id = p_organization_id/i,
+  );
+  assert.match(prepareFunction, /conversation\.channel = 'whatsapp'/i);
+  assert.match(
+    prepareFunction,
+    /connection\.id = conversation\.channel_connection_id/i,
+  );
+  assert.match(
+    prepareFunction,
+    /connection\.organization_id = p_organization_id/i,
+  );
+  assert.match(prepareFunction, /connection\.status = 'active'/i);
+  assert.match(
+    prepareFunction,
+    /for update of run\s+for share of conversation, connection/i,
+  );
+});
+
+test("first and concurrent prepare calls create at most one immutable dispatch", async () => {
+  const migration = await readAiReplyBindingMigration();
+  const prepareFunction = requireAiReplyPrepareFunction(migration);
+
+  assert.match(
+    prepareFunction,
+    /insert into public\.whatsapp_outbound_dispatches[\s\S]*source_ai_message_run_id/i,
+  );
+  assert.match(
+    prepareFunction,
+    /source_reply_text,\s*'prepared',\s*p_ai_message_run_id/i,
+  );
+  assert.match(
+    prepareFunction,
+    /on conflict \(source_ai_message_run_id\) do nothing/i,
+  );
+  assert.match(
+    prepareFunction,
+    /where dispatch\.source_ai_message_run_id = p_ai_message_run_id[\s\S]*dispatch\.organization_id = p_organization_id/i,
+  );
+  assert.doesNotMatch(
+    prepareFunction,
+    /on conflict[\s\S]*do update/i,
+  );
+  assert.doesNotMatch(
+    prepareFunction,
+    /update public\.whatsapp_outbound_dispatches/i,
+  );
+  assert.match(
+    migration,
+    /unique \(source_ai_message_run_id\)/i,
+  );
+});
+
+test("AI reply prepare returns only dispatch identity and existing state", async () => {
+  const prepareFunction = requireAiReplyPrepareFunction(
+    await readAiReplyBindingMigration(),
+  );
+  const returnProjection = prepareFunction.match(
+    /returns table \([\s\S]*?\)\s*language plpgsql/i,
+  )?.[0];
+
+  assert.ok(returnProjection);
+  assert.match(returnProjection, /dispatch_id uuid/i);
+  assert.match(returnProjection, /state text/i);
+
+  for (const forbidden of [
+    "text_content",
+    "decision",
+    "provider_message_id",
+    "organization_id",
+    "conversation_id",
+    "connection_id",
+    "customer",
+    "prompt",
+  ]) {
+    assert.equal(returnProjection.toLowerCase().includes(forbidden), false);
+  }
+  assert.match(
+    prepareFunction,
+    /select dispatch\.id, dispatch\.state[\s\S]*return query\s*select prepared_dispatch_id, prepared_dispatch_state/i,
+  );
+});
+
+test("AI reply prepare RPC is SECURITY DEFINER and service-role-only", async () => {
+  const migration = await readAiReplyBindingMigration();
+  const prepareFunction = requireAiReplyPrepareFunction(migration);
+
+  assert.match(prepareFunction, /security definer/i);
+  assert.match(prepareFunction, /set search_path = ''/i);
+  assert.match(
+    migration,
+    /revoke all\s+on function public\.prepare_ai_reply_whatsapp_dispatch\(uuid, uuid\)\s+from public, anon, authenticated, service_role/i,
+  );
+  assert.match(
+    migration,
+    /grant execute\s+on function public\.prepare_ai_reply_whatsapp_dispatch\(uuid, uuid\)\s+to service_role/i,
+  );
+  assert.doesNotMatch(
+    migration,
+    /grant (select|insert|update|delete|truncate|references|trigger)[\s\S]*on (table )?public\.whatsapp_outbound_dispatches/i,
+  );
+  assert.doesNotMatch(migration, /grant .* to anon/i);
+  assert.doesNotMatch(migration, /grant .* to authenticated/i);
+  assert.doesNotMatch(migration, /disable row level security/i);
+});
+
+test("AI reply repository sends no caller text and returns only a safe result", async () => {
+  const calls: unknown[] = [];
+  const inputWithAlternateText = {
+    aiMessageRunId: AI_MESSAGE_RUN_ID,
+    organizationId: ORGANIZATION_ID,
+    textContent: "caller must not control this",
+  };
+
+  const result = await prepareAiReplyWhatsappDispatchWithRpc(
+    inputWithAlternateText,
+    async (functionName, parameters) => {
+      calls.push({ functionName, parameters });
+      return {
+        data: [
+          {
+            dispatch_id: DISPATCH_ID,
+            provider_message_id: "must-not-return",
+            state: "provider_accepted",
+            text_content: "must-not-return",
+          },
+        ],
+        error: null,
+      };
+    },
+  );
+
+  assert.deepEqual(calls, [
+    {
+      functionName: "prepare_ai_reply_whatsapp_dispatch",
+      parameters: {
+        p_ai_message_run_id: AI_MESSAGE_RUN_ID,
+        p_organization_id: ORGANIZATION_ID,
+      },
+    },
+  ]);
+  assert.deepEqual(result, {
+    dispatchId: DISPATCH_ID,
+    state: "provider_accepted",
+  });
+  assert.equal(JSON.stringify(result).includes("must-not-return"), false);
+});
+
+test("AI reply repository validates UUID/state and hides raw database errors", async () => {
+  let rpcCalls = 0;
+
+  assert.throws(
+    () =>
+      prepareAiReplyWhatsappDispatchWithRpc(
+        {
+          aiMessageRunId: "invalid",
+          organizationId: ORGANIZATION_ID,
+        },
+        async () => {
+          rpcCalls += 1;
+          return { data: null, error: null };
+        },
+      ),
+    new RegExp(SAFE_REPOSITORY_ERROR.replaceAll(".", "\\.")),
+  );
+  assert.equal(rpcCalls, 0);
+
+  await assert.rejects(
+    prepareAiReplyWhatsappDispatchWithRpc(
+      {
+        aiMessageRunId: AI_MESSAGE_RUN_ID,
+        organizationId: ORGANIZATION_ID,
+      },
+      async () => ({
+        data: [{ dispatch_id: DISPATCH_ID, state: "unknown" }],
+        error: null,
+      }),
+    ),
+    new RegExp(SAFE_REPOSITORY_ERROR.replaceAll(".", "\\.")),
+  );
+
+  const sensitive = "raw Supabase customer and database detail";
+  for (const rpc of [
+    async () => ({ data: null, error: { message: sensitive } }),
+    async () => {
+      throw new Error(sensitive);
+    },
+  ]) {
+    await assert.rejects(
+      prepareAiReplyWhatsappDispatchWithRpc(
+        {
+          aiMessageRunId: AI_MESSAGE_RUN_ID,
+          organizationId: ORGANIZATION_ID,
+        },
+        rpc,
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, SAFE_REPOSITORY_ERROR);
+        assert.equal(error.message.includes(sensitive), false);
+        return true;
+      },
+    );
+  }
+});
+
+test("AI reply repository adds no sender, Meta, Graph, or CRM dependency", async () => {
+  const source = `${await readFile(OUTBOUND_DISPATCH_REPOSITORY_URL, "utf8")} ${await readFile(OUTBOUND_DISPATCH_REPOSITORY_CORE_URL, "utf8")}`
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+  for (const forbidden of [
+    "sendwhatsappconversationtext",
+    "sendtextmessage",
+    "meta",
+    "graph.facebook",
+    "fetch(",
+    "crm",
+    "booking provider",
+  ]) {
+    assert.equal(source.includes(forbidden), false);
+  }
 });

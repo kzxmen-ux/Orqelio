@@ -21,6 +21,11 @@ export type PrepareWhatsappOutboundDispatchInput = {
   textContent: string;
 };
 
+export type PrepareAiReplyWhatsappDispatchInput = {
+  organizationId: string;
+  aiMessageRunId: string;
+};
+
 export type WhatsappOutboundDispatchIdentity = {
   organizationId: string;
   dispatchId: string;
@@ -220,6 +225,29 @@ export function prepareWhatsappOutboundDispatchWithRpc(
       p_text_content: input.textContent,
     },
     normalizePreparedDispatchResult,
+  );
+}
+
+export function prepareAiReplyWhatsappDispatchWithRpc(
+  input: PrepareAiReplyWhatsappDispatchInput,
+  rpc: WhatsappOutboundDispatchRpc,
+): Promise<WhatsappOutboundDispatchResult> {
+  if (
+    !isRecord(input) ||
+    !isUuid(input.organizationId) ||
+    !isUuid(input.aiMessageRunId)
+  ) {
+    throw repositoryFailure();
+  }
+
+  return callRpc(
+    rpc,
+    "prepare_ai_reply_whatsapp_dispatch",
+    {
+      p_ai_message_run_id: input.aiMessageRunId,
+      p_organization_id: input.organizationId,
+    },
+    normalizeDispatchResult,
   );
 }
 

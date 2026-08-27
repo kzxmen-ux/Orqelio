@@ -7,8 +7,10 @@ import {
   getWhatsappOutboundDispatchRecoveryStateWithRpc,
   markWhatsappOutboundDispatchIndeterminateWithRpc,
   markWhatsappOutboundDispatchingWithRpc,
+  prepareAiReplyWhatsappDispatchWithRpc,
   prepareWhatsappOutboundDispatchWithRpc,
   recordWhatsappOutboundProviderAcceptanceWithRpc,
+  type PrepareAiReplyWhatsappDispatchInput,
   type PrepareWhatsappOutboundDispatchInput,
   type PreparedWhatsappOutboundDispatchResult,
   type RecordWhatsappProviderAcceptanceInput,
@@ -29,6 +31,12 @@ export function prepareWhatsappOutboundDispatch(
   input: PrepareWhatsappOutboundDispatchInput,
 ): Promise<PreparedWhatsappOutboundDispatchResult> {
   return prepareWhatsappOutboundDispatchWithRpc(input, rpc);
+}
+
+export function prepareAiReplyWhatsappDispatch(
+  input: PrepareAiReplyWhatsappDispatchInput,
+): Promise<WhatsappOutboundDispatchResult> {
+  return prepareAiReplyWhatsappDispatchWithRpc(input, rpc);
 }
 
 export function getWhatsappOutboundDispatchRecoveryState(
