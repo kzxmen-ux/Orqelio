@@ -61,6 +61,10 @@ const AI_REPLY_EXECUTION_DISCOVERY_MIGRATION_URL = new URL(
   "../../../../supabase/migrations/20260827174407_list_actionable_ai_reply_whatsapp_executions.sql",
   import.meta.url,
 );
+const AI_REPLY_INACTIVE_FINALIZATION_FIX_MIGRATION_URL = new URL(
+  "../../../../supabase/migrations/20260827175625_allow_inactive_ai_reply_finalization_recovery.sql",
+  import.meta.url,
+);
 const AI_REPLY_EXECUTION_WORKER_URL = new URL(
   "./ai-reply-whatsapp-execution-worker.ts",
   import.meta.url,
@@ -133,6 +137,25 @@ function requireAiReplyExecutionDiscoveryFunction(migration: string): string {
 
   assert.ok(discoveryFunction);
   return discoveryFunction;
+}
+
+async function readAiReplyInactiveFinalizationFixMigration(): Promise<string> {
+  return readFile(AI_REPLY_INACTIVE_FINALIZATION_FIX_MIGRATION_URL, "utf8");
+}
+
+function requireReplacedFunction(
+  migration: string,
+  functionName: string,
+): string {
+  const replacedFunction = migration.match(
+    new RegExp(
+      `create or replace function public\\.${functionName}\\([\\s\\S]*?\\n\\$\\$;`,
+      "i",
+    ),
+  )?.[0];
+
+  assert.ok(replacedFunction);
+  return replacedFunction;
 }
 
 function createDependencies(
@@ -2325,4 +2348,267 @@ test("production AI reply worker uses existing authorities without automatic wir
   ]) {
     assert.equal(source.includes(forbidden), false);
   }
+});
+
+test("inactive finalization fix replaces only prepare and finalize contracts", async () => {
+  const migration = await readAiReplyInactiveFinalizationFixMigration();
+  const prepareFunction = requireReplacedFunction(
+    migration,
+    "prepare_ai_reply_whatsapp_dispatch",
+  );
+  const finalizeFunction = requireReplacedFunction(
+    migration,
+    "finalize_whatsapp_outbound_dispatch",
+  );
+
+  assert.match(
+    prepareFunction,
+    /prepare_ai_reply_whatsapp_dispatch\(\s*p_organization_id uuid,\s*p_ai_message_run_id uuid\s*\)[\s\S]*returns table \(\s*dispatch_id uuid,\s*state text\s*\)/i,
+  );
+  assert.match(prepareFunction, /security definer/i);
+  assert.match(prepareFunction, /set search_path = ''/i);
+  assert.match(
+    finalizeFunction,
+    /finalize_whatsapp_outbound_dispatch\(\s*p_organization_id uuid,\s*p_dispatch_id uuid\s*\)[\s\S]*returns table \(\s*outcome text,\s*message_id uuid\s*\)/i,
+  );
+  assert.match(finalizeFunction, /security invoker/i);
+  assert.match(finalizeFunction, /set search_path = ''/i);
+  assert.equal(
+    [...migration.matchAll(/create or replace function public\./gi)].length,
+    2,
+  );
+});
+
+test("replaced AI reply prepare preserves exact source and tenant validation", async () => {
+  const prepareFunction = requireReplacedFunction(
+    await readAiReplyInactiveFinalizationFixMigration(),
+    "prepare_ai_reply_whatsapp_dispatch",
+  );
+
+  assert.match(prepareFunction, /run\.id = p_ai_message_run_id/i);
+  assert.match(prepareFunction, /run\.organization_id = p_organization_id/i);
+  assert.match(prepareFunction, /run\.status = 'decided'/i);
+  assert.match(prepareFunction, /jsonb_typeof\(run\.decision\) = 'object'/i);
+  assert.match(prepareFunction, /run\.decision ->> 'action' = 'reply'/i);
+  assert.match(
+    prepareFunction,
+    /run\.decision - array\['action', 'text'\] = '\{\}'::jsonb/i,
+  );
+  assert.match(
+    prepareFunction,
+    /jsonb_typeof\(run\.decision -> 'text'\) = 'string'/i,
+  );
+  assert.match(
+    prepareFunction,
+    /char_length\(run\.decision ->> 'text'\) between 1 and 2000/i,
+  );
+  assert.match(
+    prepareFunction,
+    /run\.decision ->> 'text' = btrim\(run\.decision ->> 'text'\)/i,
+  );
+  assert.match(
+    prepareFunction,
+    /conversation\.organization_id = p_organization_id[\s\S]*conversation\.channel = 'whatsapp'/i,
+  );
+  assert.match(
+    prepareFunction,
+    /for update of run\s+for share of conversation/i,
+  );
+});
+
+test("existing AI dispatches are reused with active required only for prepared", async () => {
+  const prepareFunction = requireReplacedFunction(
+    await readAiReplyInactiveFinalizationFixMigration(),
+    "prepare_ai_reply_whatsapp_dispatch",
+  );
+
+  assert.match(
+    prepareFunction,
+    /where dispatch\.source_ai_message_run_id = p_ai_message_run_id/i,
+  );
+  assert.match(
+    prepareFunction,
+    /existing_dispatch_organization_id <> p_organization_id[\s\S]*existing_dispatch_conversation_id <> source_conversation_id[\s\S]*existing_dispatch_connection_id is distinct from source_connection_id[\s\S]*existing_connection_organization_id is distinct from p_organization_id/i,
+  );
+  assert.match(
+    prepareFunction,
+    /existing_dispatch_state not in \(\s*'prepared',\s*'dispatching',\s*'provider_accepted',\s*'persisted',\s*'indeterminate'\s*\)/i,
+  );
+  assert.match(
+    prepareFunction,
+    /existing_dispatch_state = 'prepared'\s+and existing_connection_status is distinct from 'active'/i,
+  );
+  assert.doesNotMatch(
+    prepareFunction,
+    /existing_dispatch_state = '(dispatching|provider_accepted|persisted|indeterminate)'[\s\S]{0,100}existing_connection_status/i,
+  );
+  assert.match(
+    prepareFunction,
+    /return query\s+select existing_dispatch_id, existing_dispatch_state/i,
+  );
+});
+
+test("new AI dispatch creation remains active-only and idempotent", async () => {
+  const prepareFunction = requireReplacedFunction(
+    await readAiReplyInactiveFinalizationFixMigration(),
+    "prepare_ai_reply_whatsapp_dispatch",
+  );
+
+  assert.match(
+    prepareFunction,
+    /if not found then\s+perform 1\s+from public\.whatsapp_channel_connections as connection[\s\S]*connection\.id = source_connection_id[\s\S]*connection\.organization_id = p_organization_id[\s\S]*connection\.status = 'active'[\s\S]*insert into public\.whatsapp_outbound_dispatches/i,
+  );
+  assert.match(
+    prepareFunction,
+    /on conflict \(source_ai_message_run_id\) do nothing/i,
+  );
+  assert.equal(
+    [...prepareFunction.matchAll(/insert into public\.whatsapp_outbound_dispatches/gi)]
+      .length,
+    1,
+  );
+  assert.doesNotMatch(prepareFunction, /update public\.whatsapp_outbound_dispatches/i);
+  assert.doesNotMatch(prepareFunction, /set\s+state = 'prepared'/i);
+  assert.doesNotMatch(prepareFunction, /provider_message_id\s*=/i);
+});
+
+test("replaced finalization allows inactive connection but only accepted evidence", async () => {
+  const finalizeFunction = requireReplacedFunction(
+    await readAiReplyInactiveFinalizationFixMigration(),
+    "finalize_whatsapp_outbound_dispatch",
+  );
+
+  assert.match(
+    finalizeFunction,
+    /dispatch\.id = p_dispatch_id\s+and dispatch\.organization_id = p_organization_id\s+for update/i,
+  );
+  assert.match(
+    finalizeFunction,
+    /target_state not in \('provider_accepted', 'persisted'\)/i,
+  );
+  assert.match(finalizeFunction, /target_provider_message_id is null/i);
+  assert.match(
+    finalizeFunction,
+    /conversation\.id = target_conversation_id[\s\S]*conversation\.organization_id = p_organization_id[\s\S]*conversation\.channel = 'whatsapp'[\s\S]*conversation\.channel_connection_id = target_connection_id[\s\S]*connection\.organization_id = p_organization_id/i,
+  );
+  assert.doesNotMatch(finalizeFunction, /connection\.status = 'active'/i);
+  assert.doesNotMatch(
+    finalizeFunction,
+    /target_state not in \([^)]*(prepared|dispatching|indeterminate)/i,
+  );
+  assert.doesNotMatch(finalizeFunction, /meta|graph\.facebook|fetch\(|sendwhatsapp/i);
+});
+
+test("replaced finalization preserves provider identity and persistence idempotency", async () => {
+  const finalizeFunction = requireReplacedFunction(
+    await readAiReplyInactiveFinalizationFixMigration(),
+    "finalize_whatsapp_outbound_dispatch",
+  );
+
+  assert.match(finalizeFunction, /pg_catalog\.pg_advisory_xact_lock/i);
+  assert.match(
+    finalizeFunction,
+    /message\.provider_message_id = target_provider_message_id/i,
+  );
+  assert.match(
+    finalizeFunction,
+    /existing_organization_id <> p_organization_id[\s\S]*existing_conversation_id <> target_conversation_id[\s\S]*existing_connection_id <> target_connection_id[\s\S]*existing_direction <> 'outbound'[\s\S]*existing_message_type <> 'text'[\s\S]*existing_text_content is distinct from target_text_content/i,
+  );
+  assert.match(finalizeFunction, /persistence_outcome := 'duplicate'/i);
+  assert.match(finalizeFunction, /insert into public\.messages/i);
+  const dispatchUpdate = finalizeFunction.match(
+    /update public\.whatsapp_outbound_dispatches as dispatch[\s\S]*?where dispatch\.id = p_dispatch_id;/i,
+  )?.[0];
+
+  assert.ok(dispatchUpdate);
+  assert.match(dispatchUpdate, /state = 'persisted'/i);
+  assert.match(
+    dispatchUpdate,
+    /persisted_at = coalesce\(dispatch\.persisted_at, clock_timestamp\(\)\)/i,
+  );
+  assert.doesNotMatch(dispatchUpdate, /\bprovider_message_id\s*=/i);
+  assert.doesNotMatch(dispatchUpdate, /state = 'prepared'/i);
+});
+
+test("inactive recovery fix and discovery agree on provider_accepted lifecycle", async () => {
+  const fixMigration = await readAiReplyInactiveFinalizationFixMigration();
+  const discoveryFunction = requireAiReplyExecutionDiscoveryFunction(
+    await readAiReplyExecutionDiscoveryMigration(),
+  );
+  const prepareFunction = requireReplacedFunction(
+    fixMigration,
+    "prepare_ai_reply_whatsapp_dispatch",
+  );
+  const finalizeFunction = requireReplacedFunction(
+    fixMigration,
+    "finalize_whatsapp_outbound_dispatch",
+  );
+
+  assert.match(
+    discoveryFunction,
+    /\(\s*dispatch\.state = 'prepared'\s+and connection\.status = 'active'\s*\)\s+or dispatch\.state = 'provider_accepted'/i,
+  );
+  assert.match(prepareFunction, /'provider_accepted'/i);
+  assert.match(finalizeFunction, /'provider_accepted'/i);
+  assert.doesNotMatch(finalizeFunction, /connection\.status/i);
+});
+
+test("inactive provider-accepted executor path finalizes without sender", async () => {
+  const events: string[] = [];
+  let senderCallCount = 0;
+
+  const result = await executeAiReplyWhatsappWithDependencies(
+    {
+      aiMessageRunId: AI_MESSAGE_RUN_ID,
+      organizationId: ORGANIZATION_ID,
+    },
+    createAiReplyExecutorDependencies(events, {
+      finalizeWhatsappOutboundDispatch: async () => {
+        events.push("finalize-inactive");
+        return { messageId: MESSAGE_ID, outcome: "accepted" };
+      },
+      prepareAiReplyWhatsappDispatch: async () => {
+        events.push("prepare-existing-provider-accepted-inactive");
+        return { dispatchId: DISPATCH_ID, state: "provider_accepted" };
+      },
+      sendWhatsappTextMessage: async () => {
+        senderCallCount += 1;
+        throw new Error("sender must not be called");
+      },
+    }),
+  );
+
+  assert.deepEqual(events, [
+    "prepare-existing-provider-accepted-inactive",
+    "finalize-inactive",
+  ]);
+  assert.equal(senderCallCount, 0);
+  assert.deepEqual(result, { dispatchId: DISPATCH_ID, outcome: "persisted" });
+});
+
+test("inactive recovery replacements preserve narrow execution grants", async () => {
+  const migration = await readAiReplyInactiveFinalizationFixMigration();
+
+  assert.match(
+    migration,
+    /revoke all\s+on function public\.prepare_ai_reply_whatsapp_dispatch\(uuid, uuid\)\s+from public, anon, authenticated, service_role/i,
+  );
+  assert.match(
+    migration,
+    /grant execute\s+on function public\.prepare_ai_reply_whatsapp_dispatch\(uuid, uuid\)\s+to service_role/i,
+  );
+  assert.match(
+    migration,
+    /revoke all\s+on function public\.finalize_whatsapp_outbound_dispatch\(uuid, uuid\)\s+from public, anon, authenticated/i,
+  );
+  assert.match(
+    migration,
+    /grant execute\s+on function public\.finalize_whatsapp_outbound_dispatch\(uuid, uuid\)\s+to service_role/i,
+  );
+  assert.doesNotMatch(
+    migration,
+    /grant (select|insert|update|delete|truncate|references|trigger)[\s\S]*on (table )?public\./i,
+  );
+  assert.doesNotMatch(migration, /disable row level security/i);
+  assert.doesNotMatch(migration, /grant .* to anon|grant .* to authenticated/i);
 });
