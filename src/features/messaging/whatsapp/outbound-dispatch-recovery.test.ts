@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  executeAiReplyWhatsappWithDependencies,
+  type AiReplyWhatsappExecutorDependencies,
+} from "./ai-reply-whatsapp-executor-core.ts";
+import {
   recoverWhatsappOutboundDispatchWithDependencies,
   sendWhatsappConversationTextDurablyWithDependencies,
   WhatsappOutboundIndeterminateError,
@@ -37,6 +41,14 @@ const AI_REPLY_EXECUTION_CLAIM_MIGRATION_URL = new URL(
 );
 const AI_REPLY_QUARANTINE_MIGRATION_URL = new URL(
   "../../../../supabase/migrations/20260827171938_quarantine_stale_ai_reply_whatsapp_dispatches.sql",
+  import.meta.url,
+);
+const AI_REPLY_EXECUTOR_URL = new URL(
+  "./ai-reply-whatsapp-executor.ts",
+  import.meta.url,
+);
+const AI_REPLY_EXECUTOR_CORE_URL = new URL(
+  "./ai-reply-whatsapp-executor-core.ts",
   import.meta.url,
 );
 const OUTBOUND_DISPATCH_REPOSITORY_URL = new URL(
@@ -138,6 +150,46 @@ function createDependencies(
       return { dispatchId: DISPATCH_ID, state: "provider_accepted" };
     },
     sendTextMessage: async () => {
+      events.push("meta");
+      return { providerMessageId: PROVIDER_MESSAGE_ID };
+    },
+    waitBeforeRetry: async () => undefined,
+    ...overrides,
+  };
+}
+
+function createAiReplyExecutorDependencies(
+  events: string[],
+  overrides: Partial<AiReplyWhatsappExecutorDependencies> = {},
+): AiReplyWhatsappExecutorDependencies {
+  return {
+    claimAiReplyWhatsappDispatchExecution: async () => {
+      events.push("claim");
+      return {
+        dispatchId: DISPATCH_ID,
+        outcome: "claimed",
+        phoneNumberId: PHONE_NUMBER_ID,
+        recipientWaId: RECIPIENT_WA_ID,
+        text: "Stored immutable AI reply",
+      };
+    },
+    finalizeWhatsappOutboundDispatch: async () => {
+      events.push("finalize");
+      return { messageId: MESSAGE_ID, outcome: "accepted" };
+    },
+    markWhatsappOutboundDispatchIndeterminate: async () => {
+      events.push("indeterminate");
+      return { dispatchId: DISPATCH_ID, state: "indeterminate" };
+    },
+    prepareAiReplyWhatsappDispatch: async () => {
+      events.push("prepare");
+      return { dispatchId: DISPATCH_ID, state: "prepared" };
+    },
+    recordWhatsappOutboundProviderAcceptance: async () => {
+      events.push("provider_accepted");
+      return { dispatchId: DISPATCH_ID, state: "provider_accepted" };
+    },
+    sendWhatsappTextMessage: async () => {
       events.push("meta");
       return { providerMessageId: PROVIDER_MESSAGE_ID };
     },
@@ -1326,5 +1378,455 @@ test("stale quarantine repository hides raw database errors", async () => {
         return true;
       },
     );
+  }
+});
+
+test("AI reply executor follows the exact happy path and uses only claimed send data", async () => {
+  const events: string[] = [];
+  let senderInput: unknown;
+  let acceptanceInput: unknown;
+  let sendCount = 0;
+  const inputWithAlternateText = {
+    aiMessageRunId: AI_MESSAGE_RUN_ID,
+    organizationId: ORGANIZATION_ID,
+    text: "Caller-controlled text must be ignored",
+  };
+
+  const result = await executeAiReplyWhatsappWithDependencies(
+    inputWithAlternateText,
+    createAiReplyExecutorDependencies(events, {
+      recordWhatsappOutboundProviderAcceptance: async (input) => {
+        events.push("provider_accepted");
+        acceptanceInput = input;
+        return { dispatchId: DISPATCH_ID, state: "provider_accepted" };
+      },
+      sendWhatsappTextMessage: async (input) => {
+        events.push("meta");
+        senderInput = input;
+        sendCount += 1;
+        return { providerMessageId: PROVIDER_MESSAGE_ID };
+      },
+    }),
+  );
+
+  assert.deepEqual(events, [
+    "prepare",
+    "claim",
+    "meta",
+    "provider_accepted",
+    "finalize",
+  ]);
+  assert.equal(sendCount, 1);
+  assert.deepEqual(senderInput, {
+    phoneNumberId: PHONE_NUMBER_ID,
+    recipientWaId: RECIPIENT_WA_ID,
+    text: "Stored immutable AI reply",
+  });
+  assert.deepEqual(acceptanceInput, {
+    dispatchId: DISPATCH_ID,
+    organizationId: ORGANIZATION_ID,
+    providerMessageId: PROVIDER_MESSAGE_ID,
+  });
+  assert.deepEqual(result, { dispatchId: DISPATCH_ID, outcome: "persisted" });
+  assert.equal(JSON.stringify(result).includes(PROVIDER_MESSAGE_ID), false);
+  assert.equal(JSON.stringify(senderInput).includes(inputWithAlternateText.text), false);
+});
+
+test("AI reply executor prepares first and safely handles every existing dispatch state", async () => {
+  for (const scenario of [
+    {
+      expectedEvents: ["prepare"],
+      expectedOutcome: "already_dispatching",
+      state: "dispatching",
+    },
+    {
+      expectedEvents: ["prepare", "finalize"],
+      expectedOutcome: "persisted",
+      state: "provider_accepted",
+    },
+    {
+      expectedEvents: ["prepare"],
+      expectedOutcome: "persisted",
+      state: "persisted",
+    },
+    {
+      expectedEvents: ["prepare"],
+      expectedOutcome: "indeterminate",
+      state: "indeterminate",
+    },
+  ] as const) {
+    const events: string[] = [];
+    const result = await executeAiReplyWhatsappWithDependencies(
+      {
+        aiMessageRunId: AI_MESSAGE_RUN_ID,
+        organizationId: ORGANIZATION_ID,
+      },
+      createAiReplyExecutorDependencies(events, {
+        prepareAiReplyWhatsappDispatch: async () => {
+          events.push("prepare");
+          return { dispatchId: DISPATCH_ID, state: scenario.state };
+        },
+      }),
+    );
+
+    assert.deepEqual(events, scenario.expectedEvents);
+    assert.deepEqual(result, {
+      dispatchId: DISPATCH_ID,
+      outcome: scenario.expectedOutcome,
+    });
+    assert.equal(events.includes("claim"), false);
+    assert.equal(events.includes("meta"), false);
+  }
+});
+
+test("AI reply executor honors every non-winning atomic claim outcome without sending", async () => {
+  for (const scenario of [
+    {
+      expectedEvents: ["prepare", "claim"],
+      expectedOutcome: "already_dispatching",
+      outcome: "already_dispatching",
+    },
+    {
+      expectedEvents: ["prepare", "claim", "finalize"],
+      expectedOutcome: "persisted",
+      outcome: "provider_accepted",
+    },
+    {
+      expectedEvents: ["prepare", "claim"],
+      expectedOutcome: "persisted",
+      outcome: "persisted",
+    },
+    {
+      expectedEvents: ["prepare", "claim"],
+      expectedOutcome: "indeterminate",
+      outcome: "indeterminate",
+    },
+  ] as const) {
+    const events: string[] = [];
+    const result = await executeAiReplyWhatsappWithDependencies(
+      {
+        aiMessageRunId: AI_MESSAGE_RUN_ID,
+        organizationId: ORGANIZATION_ID,
+      },
+      createAiReplyExecutorDependencies(events, {
+        claimAiReplyWhatsappDispatchExecution: async () => {
+          events.push("claim");
+          return { dispatchId: DISPATCH_ID, outcome: scenario.outcome };
+        },
+      }),
+    );
+
+    assert.deepEqual(events, scenario.expectedEvents);
+    assert.deepEqual(result, {
+      dispatchId: DISPATCH_ID,
+      outcome: scenario.expectedOutcome,
+    });
+    assert.equal(events.includes("meta"), false);
+  }
+});
+
+test("AI reply executor hides prepare and claim failures before Meta", async () => {
+  const sensitive = "raw database customer detail";
+
+  for (const failingStage of ["prepare", "claim"] as const) {
+    const events: string[] = [];
+    await assert.rejects(
+      executeAiReplyWhatsappWithDependencies(
+        {
+          aiMessageRunId: AI_MESSAGE_RUN_ID,
+          organizationId: ORGANIZATION_ID,
+        },
+        createAiReplyExecutorDependencies(events, {
+          ...(failingStage === "prepare"
+            ? {
+                prepareAiReplyWhatsappDispatch: async () => {
+                  events.push("prepare");
+                  throw new Error(sensitive);
+                },
+              }
+            : {
+                claimAiReplyWhatsappDispatchExecution: async () => {
+                  events.push("claim");
+                  throw new Error(sensitive);
+                },
+              }),
+        }),
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, "AI reply WhatsApp executor failed.");
+        assert.equal(error.message.includes(sensitive), false);
+        return true;
+      },
+    );
+
+    assert.equal(events.includes("meta"), false);
+    assert.deepEqual(
+      events,
+      failingStage === "prepare" ? ["prepare"] : ["prepare", "claim"],
+    );
+  }
+});
+
+test("AI reply executor marks sender uncertainty indeterminate without a second send", async () => {
+  for (const markFails of [false, true]) {
+    const events: string[] = [];
+    let sendCount = 0;
+    const result = await executeAiReplyWhatsappWithDependencies(
+      {
+        aiMessageRunId: AI_MESSAGE_RUN_ID,
+        organizationId: ORGANIZATION_ID,
+      },
+      createAiReplyExecutorDependencies(events, {
+        markWhatsappOutboundDispatchIndeterminate: async () => {
+          events.push("indeterminate");
+          if (markFails) throw new Error("raw mark database detail");
+          return { dispatchId: DISPATCH_ID, state: "indeterminate" };
+        },
+        sendWhatsappTextMessage: async () => {
+          events.push("meta");
+          sendCount += 1;
+          throw new Error("raw Meta payload and secret");
+        },
+      }),
+    );
+
+    assert.deepEqual(result, {
+      dispatchId: DISPATCH_ID,
+      outcome: "indeterminate",
+    });
+    assert.equal(sendCount, 1);
+    assert.deepEqual(events, ["prepare", "claim", "meta", "indeterminate"]);
+    assert.equal(JSON.stringify(result).includes("raw"), false);
+  }
+});
+
+test("AI reply executor validates provider acceptance on DB-only retries", async () => {
+  const events: string[] = [];
+  const waits: number[] = [];
+  let acceptanceAttempts = 0;
+  let sendCount = 0;
+  const wrongDispatchId = "77777777-7777-4777-8777-777777777777";
+
+  const result = await executeAiReplyWhatsappWithDependencies(
+    {
+      aiMessageRunId: AI_MESSAGE_RUN_ID,
+      organizationId: ORGANIZATION_ID,
+    },
+    createAiReplyExecutorDependencies(events, {
+      recordWhatsappOutboundProviderAcceptance: async () => {
+        events.push("provider_accepted");
+        acceptanceAttempts += 1;
+        if (acceptanceAttempts === 1) {
+          return { dispatchId: wrongDispatchId, state: "provider_accepted" };
+        }
+        if (acceptanceAttempts === 2) {
+          return { dispatchId: DISPATCH_ID, state: "dispatching" };
+        }
+        return { dispatchId: DISPATCH_ID, state: "provider_accepted" };
+      },
+      sendWhatsappTextMessage: async () => {
+        events.push("meta");
+        sendCount += 1;
+        return { providerMessageId: PROVIDER_MESSAGE_ID };
+      },
+      waitBeforeRetry: async (attempt) => {
+        waits.push(attempt);
+      },
+    }),
+  );
+
+  assert.deepEqual(result, { dispatchId: DISPATCH_ID, outcome: "persisted" });
+  assert.equal(acceptanceAttempts, 3);
+  assert.equal(sendCount, 1);
+  assert.deepEqual(waits, [1, 2]);
+  assert.equal(events.at(-1), "finalize");
+});
+
+test("exhausted provider acceptance persistence becomes indeterminate without resend", async () => {
+  const events: string[] = [];
+  let acceptanceAttempts = 0;
+  let sendCount = 0;
+
+  const result = await executeAiReplyWhatsappWithDependencies(
+    {
+      aiMessageRunId: AI_MESSAGE_RUN_ID,
+      organizationId: ORGANIZATION_ID,
+    },
+    createAiReplyExecutorDependencies(events, {
+      recordWhatsappOutboundProviderAcceptance: async () => {
+        events.push("provider_accepted");
+        acceptanceAttempts += 1;
+        throw new Error("raw provider acceptance database detail");
+      },
+      sendWhatsappTextMessage: async () => {
+        events.push("meta");
+        sendCount += 1;
+        return { providerMessageId: PROVIDER_MESSAGE_ID };
+      },
+    }),
+  );
+
+  assert.deepEqual(result, {
+    dispatchId: DISPATCH_ID,
+    outcome: "indeterminate",
+  });
+  assert.equal(acceptanceAttempts, 3);
+  assert.equal(sendCount, 1);
+  assert.equal(events.filter((event) => event === "indeterminate").length, 1);
+  assert.equal(events.includes("finalize"), false);
+  assert.equal(JSON.stringify(result).includes("database"), false);
+});
+
+test("provider acceptance already persisted skips finalization", async () => {
+  const events: string[] = [];
+  const result = await executeAiReplyWhatsappWithDependencies(
+    {
+      aiMessageRunId: AI_MESSAGE_RUN_ID,
+      organizationId: ORGANIZATION_ID,
+    },
+    createAiReplyExecutorDependencies(events, {
+      recordWhatsappOutboundProviderAcceptance: async () => {
+        events.push("provider_accepted");
+        return { dispatchId: DISPATCH_ID, state: "persisted" };
+      },
+    }),
+  );
+
+  assert.deepEqual(result, { dispatchId: DISPATCH_ID, outcome: "persisted" });
+  assert.deepEqual(events, ["prepare", "claim", "meta", "provider_accepted"]);
+});
+
+test("AI reply executor retries finalization only and eventually persists", async () => {
+  let finalizeAttempts = 0;
+  let sendCount = 0;
+  const waits: number[] = [];
+
+  const result = await executeAiReplyWhatsappWithDependencies(
+    {
+      aiMessageRunId: AI_MESSAGE_RUN_ID,
+      organizationId: ORGANIZATION_ID,
+    },
+    createAiReplyExecutorDependencies([], {
+      finalizeWhatsappOutboundDispatch: async () => {
+        finalizeAttempts += 1;
+        if (finalizeAttempts < 3) throw new Error("raw transient DB detail");
+        return { messageId: MESSAGE_ID, outcome: "accepted" };
+      },
+      sendWhatsappTextMessage: async () => {
+        sendCount += 1;
+        return { providerMessageId: PROVIDER_MESSAGE_ID };
+      },
+      waitBeforeRetry: async (attempt) => {
+        waits.push(attempt);
+      },
+    }),
+  );
+
+  assert.deepEqual(result, { dispatchId: DISPATCH_ID, outcome: "persisted" });
+  assert.equal(finalizeAttempts, 3);
+  assert.equal(sendCount, 1);
+  assert.deepEqual(waits, [1, 2]);
+});
+
+test("exhausted finalization stays provider_accepted and never resends", async () => {
+  let finalizeAttempts = 0;
+  let sendCount = 0;
+
+  const result = await executeAiReplyWhatsappWithDependencies(
+    {
+      aiMessageRunId: AI_MESSAGE_RUN_ID,
+      organizationId: ORGANIZATION_ID,
+    },
+    createAiReplyExecutorDependencies([], {
+      finalizeWhatsappOutboundDispatch: async () => {
+        finalizeAttempts += 1;
+        throw new Error("raw finalization database detail");
+      },
+      sendWhatsappTextMessage: async () => {
+        sendCount += 1;
+        return { providerMessageId: PROVIDER_MESSAGE_ID };
+      },
+    }),
+  );
+
+  assert.deepEqual(result, {
+    dispatchId: DISPATCH_ID,
+    outcome: "provider_accepted",
+  });
+  assert.equal(finalizeAttempts, 3);
+  assert.equal(sendCount, 1);
+  assert.equal(JSON.stringify(result).includes("finalization"), false);
+});
+
+test("two logical AI reply executors produce one total Meta send", async () => {
+  let sendCount = 0;
+  const first = await executeAiReplyWhatsappWithDependencies(
+    {
+      aiMessageRunId: AI_MESSAGE_RUN_ID,
+      organizationId: ORGANIZATION_ID,
+    },
+    createAiReplyExecutorDependencies([], {
+      sendWhatsappTextMessage: async () => {
+        sendCount += 1;
+        return { providerMessageId: PROVIDER_MESSAGE_ID };
+      },
+    }),
+  );
+  const second = await executeAiReplyWhatsappWithDependencies(
+    {
+      aiMessageRunId: AI_MESSAGE_RUN_ID,
+      organizationId: ORGANIZATION_ID,
+    },
+    createAiReplyExecutorDependencies([], {
+      prepareAiReplyWhatsappDispatch: async () => ({
+        dispatchId: DISPATCH_ID,
+        state: "dispatching",
+      }),
+      sendWhatsappTextMessage: async () => {
+        sendCount += 1;
+        return { providerMessageId: PROVIDER_MESSAGE_ID };
+      },
+    }),
+  );
+
+  assert.deepEqual(first, { dispatchId: DISPATCH_ID, outcome: "persisted" });
+  assert.deepEqual(second, {
+    dispatchId: DISPATCH_ID,
+    outcome: "already_dispatching",
+  });
+  assert.equal(sendCount, 1);
+});
+
+test("production AI reply executor is server-only and has no automatic wiring", async () => {
+  const wrapper = await readFile(AI_REPLY_EXECUTOR_URL, "utf8");
+  const core = await readFile(AI_REPLY_EXECUTOR_CORE_URL, "utf8");
+  const source = `${wrapper}\n${core}`;
+
+  assert.match(wrapper, /import "server-only"/);
+  assert.match(
+    wrapper,
+    /import \{ sendWhatsappTextMessage \} from "\.\/outbound-text-sender"/,
+  );
+  assert.match(wrapper, /prepareAiReplyWhatsappDispatch/);
+  assert.match(wrapper, /claimAiReplyWhatsappDispatchExecution/);
+  assert.match(wrapper, /recordWhatsappOutboundProviderAcceptance/);
+  assert.match(wrapper, /finalizeWhatsappOutboundDispatch/);
+  assert.match(wrapper, /markWhatsappOutboundDispatchIndeterminate/);
+
+  for (const forbidden of [
+    "fetch(",
+    "graph.facebook",
+    "createPrivilegedClient",
+    ".from(",
+    "sendWhatsappConversationText",
+    "prepareWhatsappOutboundDispatch",
+    "markWhatsappOutboundDispatching",
+    "inbox-processor",
+    "ai-runtime",
+    "/cron/",
+    "/route",
+  ]) {
+    assert.equal(source.includes(forbidden), false);
   }
 });
