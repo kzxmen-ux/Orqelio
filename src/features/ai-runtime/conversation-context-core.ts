@@ -23,6 +23,7 @@ export type ConversationAiContextMessage = {
   role: "customer" | "assistant";
   text: string;
   createdAt: string;
+  isCurrentTrigger: boolean;
 };
 
 export type ConversationAiContext = {
@@ -296,6 +297,7 @@ function mapHistoryRow(
   return {
     createdAt: row.created_at,
     id: row.id,
+    isCurrentTrigger: false,
     role: row.direction === "inbound" ? "customer" : "assistant",
     sourceIndex,
     text: row.text_content,
@@ -330,6 +332,7 @@ export function buildBoundedConversationMessages(
   byId.set(trigger.id, {
     createdAt: trigger.createdAt,
     id: trigger.id,
+    isCurrentTrigger: true,
     role: "customer",
     sourceIndex: existingTrigger?.sourceIndex ?? -1,
     text: trigger.text,
@@ -365,7 +368,12 @@ export function buildBoundedConversationMessages(
     triggerMessage.text = triggerMessage.text.slice(0, MAX_CONTEXT_CHARACTERS);
   }
 
-  return messages.map(({ createdAt, role, text }) => ({ createdAt, role, text }));
+  return messages.map(({ createdAt, isCurrentTrigger, role, text }) => ({
+    createdAt,
+    isCurrentTrigger,
+    role,
+    text,
+  }));
 }
 
 export async function loadConversationAiContextWithDependencies(

@@ -62,16 +62,19 @@ function makeContext(
     handoffPolicy: makeHandoffPolicy(handoffOverrides),
     messages: [
       {
+        isCurrentTrigger: false,
         role: "customer",
         text: "Здравствуйте",
         createdAt: "2026-08-24T08:00:00.000Z",
       },
       {
+        isCurrentTrigger: false,
         role: "assistant",
         text: "Добрый день!",
         createdAt: "2026-08-24T08:00:01.000Z",
       },
       {
+        isCurrentTrigger: true,
         role: "customer",
         text: "Когда вы работаете?",
         createdAt: "2026-08-24T08:00:02.000Z",

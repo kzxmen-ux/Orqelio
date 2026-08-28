@@ -125,7 +125,12 @@ test("valid tenant and inbound trigger return a bounded ready context", async ()
   assert.equal(result.context.triggerMessageId, TRIGGER_MESSAGE_ID);
   assert.deepEqual(result.context.organization, { name: "Orqelio Test Business" });
   assert.deepEqual(result.context.messages, [
-    { createdAt: TRIGGER_CREATED_AT, role: "customer", text: "Trigger text" },
+    {
+      createdAt: TRIGGER_CREATED_AT,
+      isCurrentTrigger: true,
+      role: "customer",
+      text: "Trigger text",
+    },
   ]);
 });
 
@@ -334,12 +339,60 @@ test("history maps roles, excludes failed outbound and is chronological", async 
   assert.equal(result.outcome, "ready");
   if (result.outcome !== "ready") return;
   assert.deepEqual(
-    result.context.messages.map(({ role, text }) => ({ role, text })),
+    result.context.messages.map(({ isCurrentTrigger, role, text }) => ({
+      isCurrentTrigger,
+      role,
+      text,
+    })),
     [
-      { role: "customer", text: "customer" },
-      { role: "assistant", text: "assistant" },
-      { role: "customer", text: "trigger" },
+      { isCurrentTrigger: false, role: "customer", text: "customer" },
+      { isCurrentTrigger: false, role: "assistant", text: "assistant" },
+      { isCurrentTrigger: true, role: "customer", text: "trigger" },
     ],
+  );
+});
+
+test("duplicate history IDs still produce exactly one exact current trigger", async () => {
+  const result = await loadConversationAiContextWithDependencies(
+    INPUT,
+    createDependencies({
+      loadRecentMessages: async () => ({
+        data: [
+          historyMessage(2),
+          historyMessage(1, {
+            created_at: TRIGGER_CREATED_AT,
+            id: TRIGGER_MESSAGE_ID,
+            text_content: "stale duplicate trigger text",
+          }),
+          historyMessage(0, {
+            created_at: TRIGGER_CREATED_AT,
+            id: TRIGGER_MESSAGE_ID,
+            text_content: "another duplicate trigger text",
+          }),
+        ],
+        error: null,
+      }),
+    }),
+  );
+
+  assert.equal(result.outcome, "ready");
+  if (result.outcome !== "ready") return;
+  const currentTriggers = result.context.messages.filter(
+    (message) => message.isCurrentTrigger,
+  );
+  assert.deepEqual(currentTriggers, [
+    {
+      createdAt: TRIGGER_CREATED_AT,
+      isCurrentTrigger: true,
+      role: "customer",
+      text: "Trigger text",
+    },
+  ]);
+  assert.equal(
+    result.context.messages.some(
+      (message) => message.text.includes("duplicate trigger text"),
+    ),
+    false,
   );
 });
 
@@ -359,6 +412,11 @@ test("history keeps newest 30 messages and retains trigger", async () => {
   assert.equal(
     result.context.messages.some((message) => message.text === "Trigger text"),
     true,
+  );
+  assert.equal(
+    result.context.messages.filter((message) => message.isCurrentTrigger)
+      .length,
+    1,
   );
   assert.equal(
     result.context.messages.some((message) => message.text === "message-35"),
@@ -391,6 +449,47 @@ test("12,000-character budget drops oldest messages first", async () => {
   assert.equal(texts.includes(newest), true);
   assert.equal(texts.includes("Trigger text"), true);
   assert.ok(texts.reduce((total, text) => total + text.length, 0) <= 12_000);
+  assert.equal(
+    result.context.messages.filter((message) => message.isCurrentTrigger)
+      .length,
+    1,
+  );
+});
+
+test("oversized exact trigger is truncated without losing its marker", async () => {
+  const oversizedTrigger = "t".repeat(13_000);
+  const result = await loadConversationAiContextWithDependencies(
+    INPUT,
+    createDependencies({
+      loadRecentMessages: async () => ({ data: [], error: null }),
+      loadTriggerMessage: async () => ({
+        data: [
+          {
+            channel: "whatsapp",
+            conversation_id: CONVERSATION_ID,
+            created_at: TRIGGER_CREATED_AT,
+            direction: "inbound",
+            id: TRIGGER_MESSAGE_ID,
+            message_type: "text",
+            organization_id: ORGANIZATION_ID,
+            text_content: oversizedTrigger,
+          },
+        ],
+        error: null,
+      }),
+    }),
+  );
+
+  assert.equal(result.outcome, "ready");
+  if (result.outcome !== "ready") return;
+  assert.deepEqual(result.context.messages, [
+    {
+      createdAt: TRIGGER_CREATED_AT,
+      isCurrentTrigger: true,
+      role: "customer",
+      text: oversizedTrigger.slice(0, 12_000),
+    },
+  ]);
 });
 
 test("messages after trigger are excluded", async () => {
