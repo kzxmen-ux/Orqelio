@@ -12,6 +12,7 @@ export function sendWhatsappTextMessage(
   input: WhatsappTextMessageInput,
 ): Promise<WhatsappTextMessageResult> {
   return sendWhatsappTextMessageWithDependencies(input, {
+    createTimeoutSignal: (timeoutMs) => AbortSignal.timeout(timeoutMs),
     fetch,
     getAccessToken: getMetaSystemUserToken,
   });

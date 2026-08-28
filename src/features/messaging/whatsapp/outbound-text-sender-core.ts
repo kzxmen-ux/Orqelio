@@ -1,4 +1,5 @@
 const META_GRAPH_API_VERSION = "v26.0";
+const META_REQUEST_TIMEOUT_MS = 15_000;
 const META_IDENTIFIER_PATTERN = /^[0-9]+$/;
 
 export type WhatsappTextMessageInput = {
@@ -17,6 +18,7 @@ export type WhatsappOutboundFetch = (
 ) => Promise<Response>;
 
 export type WhatsappTextSenderDependencies = {
+  createTimeoutSignal: (timeoutMs: number) => AbortSignal;
   fetch: WhatsappOutboundFetch;
   getAccessToken: () => string;
 };
@@ -110,6 +112,8 @@ export async function sendWhatsappTextMessageWithDependencies(
   let response: Response;
 
   try {
+    const signal = dependencies.createTimeoutSignal(META_REQUEST_TIMEOUT_MS);
+
     response = await dependencies.fetch(
       `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${validatedInput.phoneNumberId}/messages`,
       {
@@ -125,6 +129,7 @@ export async function sendWhatsappTextMessageWithDependencies(
           "Content-Type": "application/json",
         },
         method: "POST",
+        signal,
       },
     );
   } catch {
