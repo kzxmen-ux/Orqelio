@@ -434,7 +434,7 @@ test("a terminal write race returns already_terminal without another AI call", a
   assert.equal(aiCalls, 1);
 });
 
-test("production orchestration contains no outbound, Meta, or CRM sender", async () => {
+test("production orchestration contains no direct Meta, sender, or CRM dependency", async () => {
   const sourceUrls = [
     new URL("./inbound-processing.ts", import.meta.url),
     new URL("./durable-inbound-processing-core.ts", import.meta.url),
@@ -448,11 +448,10 @@ test("production orchestration contains no outbound, Meta, or CRM sender", async
 
   assert.equal(
     sources.match(/getImmediateAiReplyWhatsappExecutionCandidate/g)?.length,
-    1,
+    2,
   );
 
   for (const forbidden of [
-    "executeAiReplyWhatsapp",
     "sendWhatsappTextMessage",
     "sendWhatsappConversationText",
     "MetaWhatsAppProvider",

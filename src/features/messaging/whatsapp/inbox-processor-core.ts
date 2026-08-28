@@ -1,5 +1,6 @@
 import type { DurableAiInboundProcessingResult } from "../../ai-runtime/durable-inbound-processing-core.ts";
 import type { AiInboundProcessingInput } from "../../ai-runtime/inbound-processing-core.ts";
+import type { AiReplyWhatsappExecutionResult } from "./ai-reply-whatsapp-executor-core";
 
 export type ImmediateAiReplyWhatsappExecutionCandidate = {
   organizationId: string;
@@ -24,6 +25,28 @@ export function getImmediateAiReplyWhatsappExecutionCandidate(
   };
 }
 
+export type ImmediateReplyExecutionSummary = {
+  candidateCount: number;
+  persistedCount: number;
+  providerAcceptedCount: number;
+  alreadyDispatchingCount: number;
+  indeterminateCount: number;
+  failedCount: number;
+};
+
+function createImmediateReplyExecutionSummary(
+  candidateCount = 0,
+): ImmediateReplyExecutionSummary {
+  return {
+    candidateCount,
+    persistedCount: 0,
+    providerAcceptedCount: 0,
+    alreadyDispatchingCount: 0,
+    indeterminateCount: 0,
+    failedCount: 0,
+  };
+}
+
 export type WhatsappInboxProcessorResult =
   | {
       outcome: "processed";
@@ -32,6 +55,7 @@ export type WhatsappInboxProcessorResult =
       routedStatusCount: number;
       storedStatusCount: number;
       aiProcessingResults: readonly DurableAiInboundProcessingResult[];
+      immediateReplyExecution: ImmediateReplyExecutionSummary;
     }
   | {
       outcome: "unavailable";
@@ -40,6 +64,7 @@ export type WhatsappInboxProcessorResult =
       routedStatusCount: 0;
       storedStatusCount: 0;
       aiProcessingResults: readonly [];
+      immediateReplyExecution: ImmediateReplyExecutionSummary;
     };
 
 type ClaimResult =
@@ -66,6 +91,9 @@ export type WhatsappInboxProcessorDependencies<TMessage, TStatus> = {
   processDurableAi: (
     input: AiInboundProcessingInput,
   ) => Promise<DurableAiInboundProcessingResult>;
+  executeImmediateReply: (
+    input: ImmediateAiReplyWhatsappExecutionCandidate,
+  ) => Promise<AiReplyWhatsappExecutionResult>;
   completeEvent: (eventId: string) => Promise<unknown>;
   failEvent: (eventId: string, errorCode: string) => Promise<unknown>;
 };
@@ -139,6 +167,7 @@ export async function processWhatsappInboxEventWithDependencies<
       routedStatusCount: 0,
       storedStatusCount: 0,
       aiProcessingResults: [],
+      immediateReplyExecution: createImmediateReplyExecutionSummary(),
     };
   }
 
@@ -164,6 +193,8 @@ export async function processWhatsappInboxEventWithDependencies<
 
   let storedMessageCount = 0;
   const aiProcessingResults: DurableAiInboundProcessingResult[] = [];
+  const immediateReplyCandidates: ImmediateAiReplyWhatsappExecutionCandidate[] =
+    [];
 
   for (const message of messages) {
     let storeResult: StoreResult;
@@ -182,11 +213,22 @@ export async function processWhatsappInboxEventWithDependencies<
     const aiInput = getAiInput(message, storeResult);
 
     if (aiInput) {
+      let durableResult: DurableAiInboundProcessingResult;
+
       try {
-        aiProcessingResults.push(await dependencies.processDurableAi(aiInput));
+        durableResult = await dependencies.processDurableAi(aiInput);
       } catch {
         throw processorFailure();
       }
+
+      aiProcessingResults.push(durableResult);
+
+      const candidate = getImmediateAiReplyWhatsappExecutionCandidate(
+        aiInput,
+        durableResult,
+      );
+
+      if (candidate) immediateReplyCandidates.push(candidate);
     }
   }
 
@@ -211,6 +253,33 @@ export async function processWhatsappInboxEventWithDependencies<
     throw processorFailure();
   }
 
+  const immediateReplyExecution = createImmediateReplyExecutionSummary(
+    immediateReplyCandidates.length,
+  );
+
+  for (const candidate of immediateReplyCandidates) {
+    try {
+      const execution = await dependencies.executeImmediateReply(candidate);
+
+      switch (execution.outcome) {
+        case "persisted":
+          immediateReplyExecution.persistedCount += 1;
+          break;
+        case "provider_accepted":
+          immediateReplyExecution.providerAcceptedCount += 1;
+          break;
+        case "already_dispatching":
+          immediateReplyExecution.alreadyDispatchingCount += 1;
+          break;
+        case "indeterminate":
+          immediateReplyExecution.indeterminateCount += 1;
+          break;
+      }
+    } catch {
+      immediateReplyExecution.failedCount += 1;
+    }
+  }
+
   return {
     outcome: "processed",
     routedMessageCount: messages.length,
@@ -218,5 +287,6 @@ export async function processWhatsappInboxEventWithDependencies<
     routedStatusCount: statuses.length,
     storedStatusCount,
     aiProcessingResults,
+    immediateReplyExecution,
   };
 }

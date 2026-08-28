@@ -9,6 +9,7 @@ import {
   type DurableAiInboundProcessingResult,
 } from "../../ai-runtime/durable-inbound-processing-core.ts";
 import type { AiInboundProcessingInput } from "../../ai-runtime/inbound-processing-core.ts";
+import type { AiReplyWhatsappExecutionResult } from "./ai-reply-whatsapp-executor-core.ts";
 import {
   getImmediateAiReplyWhatsappExecutionCandidate,
   processWhatsappInboxEventWithDependencies,
@@ -32,6 +33,19 @@ const MESSAGE_ID = "44444444-4444-4444-8444-444444444444";
 const RUN_ID = "55555555-5555-4555-8555-555555555555";
 const RAW_PAYLOAD = { object: "whatsapp_business_account", entry: [] };
 const SAFE_PROCESSOR_ERROR = /^Error: WhatsApp inbox processor failed\.$/;
+const ZERO_IMMEDIATE_REPLY_EXECUTION = {
+  candidateCount: 0,
+  persistedCount: 0,
+  providerAcceptedCount: 0,
+  alreadyDispatchingCount: 0,
+  indeterminateCount: 0,
+  failedCount: 0,
+};
+const INBOX_PROCESSOR_URL = new URL("./inbox-processor.ts", import.meta.url);
+const INBOX_PROCESSOR_CORE_URL = new URL(
+  "./inbox-processor-core.ts",
+  import.meta.url,
+);
 const MIGRATION_URL = new URL(
   "../../../../supabase/migrations/20260822202836_whatsapp_outbound_delivery_status.sql",
   import.meta.url,
@@ -88,6 +102,9 @@ function createDependencies(
     storeStatus: async () => ({ outcome: "updated" }),
     processDurableAi: async () => {
       throw new Error("Unexpected AI processing call.");
+    },
+    executeImmediateReply: async () => {
+      throw new Error("Unexpected immediate reply execution call.");
     },
     completeEvent: async () => undefined,
     failEvent: async () => undefined,
@@ -188,6 +205,79 @@ test("immediate reply candidate excludes every non-new-reply outcome", () => {
   }
 });
 
+test("non-reply and duplicate durable outcomes never invoke the executor", async () => {
+  const nonEligibleResults: DurableAiInboundProcessingResult[] = [
+    {
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: {
+        outcome: "decided",
+        decision: {
+          action: "booking_action_required",
+          bookingIntent: "create_appointment",
+        },
+      },
+    },
+    {
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: {
+        outcome: "decided",
+        decision: {
+          action: "handoff",
+          reasonCode: "customer_requested_human",
+          safeReason: "The customer requested a person.",
+        },
+      },
+    },
+    {
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: {
+        outcome: "decided",
+        decision: {
+          action: "no_safe_answer",
+          reason: "model_cannot_answer",
+        },
+      },
+    },
+    {
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: { outcome: "blocked", reason: "ai_configuration_missing" },
+    },
+    {
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: { outcome: "failed", reason: "provider_error" },
+    },
+    { outcome: "already_processing", runId: RUN_ID },
+    { outcome: "already_terminal", runId: RUN_ID, status: "decided" },
+    { outcome: "already_terminal", runId: RUN_ID, status: "blocked" },
+    { outcome: "already_terminal", runId: RUN_ID, status: "failed" },
+  ];
+
+  for (const durableResult of nonEligibleResults) {
+    let executionCalls = 0;
+    const result = await processWhatsappInboxEventWithDependencies(
+      EVENT_ID,
+      createDependencies({
+        routePayload: async () => [
+          { id: "text", organizationId: ORGANIZATION_ID, type: "text" },
+        ],
+        processDurableAi: async () => durableResult,
+        executeImmediateReply: async () => {
+          executionCalls += 1;
+          return { outcome: "persisted", dispatchId: "must-not-run" };
+        },
+      }),
+    );
+
+    assert.equal(executionCalls, 0);
+    assert.deepEqual(result.immediateReplyExecution, ZERO_IMMEDIATE_REPLY_EXECUTION);
+  }
+});
+
 test("processes a claimed event", async () => {
   let completedEventId: string | null = null;
   const message = { id: "message-1" };
@@ -218,6 +308,7 @@ test("processes a claimed event", async () => {
       routedStatusCount: 0,
       storedStatusCount: 0,
       aiProcessingResults: [],
+      immediateReplyExecution: ZERO_IMMEDIATE_REPLY_EXECUTION,
     },
   );
   assert.equal(completedEventId, EVENT_ID);
@@ -226,6 +317,7 @@ test("processes a claimed event", async () => {
 test("accepted text runs store, claim, runtime, terminal write, then completion", async () => {
   const operations: string[] = [];
   const aiInputs: unknown[] = [];
+  const immediateInputs: unknown[] = [];
   const message = {
     id: "message-1",
     organizationId: ORGANIZATION_ID,
@@ -233,6 +325,7 @@ test("accepted text runs store, claim, runtime, terminal write, then completion"
   };
   const dependencies = createDependencies({
     routePayload: async () => [message],
+    routeStatuses: async () => [{ id: "delivery-status" }],
     storeMessage: async () => {
       operations.push("store");
       return {
@@ -266,8 +359,17 @@ test("accepted text runs store, claim, runtime, terminal write, then completion"
         },
       });
     },
+    storeStatus: async () => {
+      operations.push("status");
+      return { outcome: "updated" };
+    },
     completeEvent: async () => {
       operations.push("complete");
+    },
+    executeImmediateReply: async (input) => {
+      operations.push("execute");
+      immediateInputs.push(input);
+      return { outcome: "persisted", dispatchId: "dispatch-id" };
     },
   });
 
@@ -277,8 +379,8 @@ test("accepted text runs store, claim, runtime, terminal write, then completion"
       outcome: "processed",
       routedMessageCount: 1,
       storedMessageCount: 1,
-      routedStatusCount: 0,
-      storedStatusCount: 0,
+      routedStatusCount: 1,
+      storedStatusCount: 1,
       aiProcessingResults: [
         {
           outcome: "completed",
@@ -289,6 +391,14 @@ test("accepted text runs store, claim, runtime, terminal write, then completion"
           },
         },
       ],
+      immediateReplyExecution: {
+        candidateCount: 1,
+        persistedCount: 1,
+        providerAcceptedCount: 0,
+        alreadyDispatchingCount: 0,
+        indeterminateCount: 0,
+        failedCount: 0,
+      },
     },
   );
   assert.deepEqual(operations, [
@@ -296,7 +406,9 @@ test("accepted text runs store, claim, runtime, terminal write, then completion"
     "claim",
     "runtime",
     "terminal",
+    "status",
     "complete",
+    "execute",
   ]);
   assert.deepEqual(aiInputs, [
     {
@@ -305,10 +417,139 @@ test("accepted text runs store, claim, runtime, terminal write, then completion"
       triggerMessageId: MESSAGE_ID,
     },
   ]);
+  assert.deepEqual(immediateInputs, [
+    { organizationId: ORGANIZATION_ID, aiMessageRunId: RUN_ID },
+  ]);
+  assert.deepEqual(Object.keys(immediateInputs[0] ?? {}).sort(), [
+    "aiMessageRunId",
+    "organizationId",
+  ]);
+  assert.equal(JSON.stringify(immediateInputs).includes("Здравствуйте"), false);
+});
+
+test("post-completion candidates execute sequentially and aggregate safe outcomes", async () => {
+  const cases: Array<{
+    messageId: string;
+    runId: string;
+    execution: AiReplyWhatsappExecutionResult | "throw";
+  }> = [
+    {
+      messageId: "61111111-1111-4111-8111-111111111111",
+      runId: "71111111-1111-4111-8111-111111111111",
+      execution: { outcome: "persisted", dispatchId: "dispatch-1" },
+    },
+    {
+      messageId: "62222222-2222-4222-8222-222222222222",
+      runId: "72222222-2222-4222-8222-222222222222",
+      execution: "throw",
+    },
+    {
+      messageId: "63333333-3333-4333-8333-333333333333",
+      runId: "73333333-3333-4333-8333-333333333333",
+      execution: {
+        outcome: "provider_accepted",
+        dispatchId: "dispatch-3",
+      },
+    },
+    {
+      messageId: "64444444-4444-4444-8444-444444444444",
+      runId: "74444444-4444-4444-8444-444444444444",
+      execution: {
+        outcome: "already_dispatching",
+        dispatchId: "dispatch-4",
+      },
+    },
+    {
+      messageId: "65555555-5555-4555-8555-555555555555",
+      runId: "75555555-5555-4555-8555-555555555555",
+      execution: { outcome: "indeterminate", dispatchId: "dispatch-5" },
+    },
+  ];
+  const operations: string[] = [];
+  const executedCandidates: unknown[] = [];
+  let activeExecutions = 0;
+  let maximumActiveExecutions = 0;
+  let failEventCalls = 0;
+  const sensitive = "raw Meta and database execution failure";
+  const dependencies = createDependencies({
+    routePayload: async () =>
+      cases.map(({ messageId }) => ({
+        id: messageId,
+        organizationId: ORGANIZATION_ID,
+        type: "text",
+      })),
+    storeMessage: async (message) => ({
+      conversationId: CONVERSATION_ID,
+      messageId: message.id,
+      outcome: "accepted",
+    }),
+    processDurableAi: async (input) => {
+      const current = cases.find(
+        ({ messageId }) => messageId === input.triggerMessageId,
+      );
+      assert.ok(current);
+      return {
+        outcome: "completed",
+        runId: current.runId,
+        aiResult: {
+          outcome: "decided",
+          decision: { action: "reply", text: "Private reply text" },
+        },
+      };
+    },
+    completeEvent: async () => {
+      operations.push("complete");
+    },
+    executeImmediateReply: async (candidate) => {
+      operations.push(`execute:${candidate.aiMessageRunId}`);
+      executedCandidates.push(candidate);
+      activeExecutions += 1;
+      maximumActiveExecutions = Math.max(
+        maximumActiveExecutions,
+        activeExecutions,
+      );
+      await Promise.resolve();
+      activeExecutions -= 1;
+
+      const current = cases.find(
+        ({ runId }) => runId === candidate.aiMessageRunId,
+      );
+      assert.ok(current);
+      if (current.execution === "throw") throw new Error(sensitive);
+      return current.execution;
+    },
+    failEvent: async () => {
+      failEventCalls += 1;
+    },
+  });
+
+  const result = await processWhatsappInboxEventWithDependencies(
+    EVENT_ID,
+    dependencies,
+  );
+
+  assert.equal(result.outcome, "processed");
+  assert.deepEqual(result.immediateReplyExecution, {
+    candidateCount: 5,
+    persistedCount: 1,
+    providerAcceptedCount: 1,
+    alreadyDispatchingCount: 1,
+    indeterminateCount: 1,
+    failedCount: 1,
+  });
+  assert.deepEqual(operations, [
+    "complete",
+    ...cases.map(({ runId }) => `execute:${runId}`),
+  ]);
+  assert.equal(maximumActiveExecutions, 1);
+  assert.equal(failEventCalls, 0);
+  assert.equal(JSON.stringify(result).includes(sensitive), false);
+  assert.equal(JSON.stringify(executedCandidates).includes("Private reply"), false);
 });
 
 test("does not invoke AI when inbound text persistence fails", async () => {
   let aiCallCount = 0;
+  let immediateExecutionCalls = 0;
   const dependencies = createDependencies({
     routePayload: async () => [
       { id: "fails", organizationId: ORGANIZATION_ID, type: "text" },
@@ -320,6 +561,10 @@ test("does not invoke AI when inbound text persistence fails", async () => {
       aiCallCount += 1;
       return { outcome: "already_processing", runId: RUN_ID };
     },
+    executeImmediateReply: async () => {
+      immediateExecutionCalls += 1;
+      return { outcome: "persisted", dispatchId: "must-not-run" };
+    },
   });
 
   await assert.rejects(
@@ -327,6 +572,7 @@ test("does not invoke AI when inbound text persistence fails", async () => {
     SAFE_PROCESSOR_ERROR,
   );
   assert.equal(aiCallCount, 0);
+  assert.equal(immediateExecutionCalls, 0);
 });
 
 test("does not invoke AI for an unsupported inbound message type", async () => {
@@ -383,6 +629,7 @@ test("keeps an AI failure explicit without failing the durable event", async () 
 
 test("a durable orchestration exception prevents webhook completion safely", async () => {
   let completed = false;
+  let immediateExecutionCalls = 0;
   const sensitive = "raw repository error and customer data";
   const dependencies = createDependencies({
     routePayload: async () => [
@@ -393,6 +640,10 @@ test("a durable orchestration exception prevents webhook completion safely", asy
     },
     completeEvent: async () => {
       completed = true;
+    },
+    executeImmediateReply: async () => {
+      immediateExecutionCalls += 1;
+      return { outcome: "persisted", dispatchId: "must-not-run" };
     },
   });
 
@@ -406,6 +657,7 @@ test("a durable orchestration exception prevents webhook completion safely", asy
     },
   );
   assert.equal(completed, false);
+  assert.equal(immediateExecutionCalls, 0);
 });
 
 test("returns unavailable without routing or completing", async () => {
@@ -430,6 +682,7 @@ test("returns unavailable without routing or completing", async () => {
       routedStatusCount: 0,
       storedStatusCount: 0,
       aiProcessingResults: [],
+      immediateReplyExecution: ZERO_IMMEDIATE_REPLY_EXECUTION,
     },
   );
   assert.equal(downstreamCallCount, 0);
@@ -452,6 +705,7 @@ test("completes an event with zero routed messages", async () => {
       routedStatusCount: 0,
       storedStatusCount: 0,
       aiProcessingResults: [],
+      immediateReplyExecution: ZERO_IMMEDIATE_REPLY_EXECUTION,
     },
   );
   assert.equal(completed, true);
@@ -551,6 +805,7 @@ test("duplicate text with no run claims and executes AI exactly once", async () 
           },
         },
       ],
+      immediateReplyExecution: ZERO_IMMEDIATE_REPLY_EXECUTION,
     },
   );
   assert.equal(runtimeCalls, 1);
@@ -799,9 +1054,25 @@ test("completes only after every message is stored", async () => {
 
 test("throws safely when completion fails", async () => {
   let failMarkCallCount = 0;
+  let immediateExecutionCalls = 0;
   const dependencies = createDependencies({
+    routePayload: async () => [
+      { id: "text", organizationId: ORGANIZATION_ID, type: "text" },
+    ],
+    processDurableAi: async () => ({
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: {
+        outcome: "decided",
+        decision: { action: "reply", text: "Must remain durable only" },
+      },
+    }),
     completeEvent: async () => {
       throw new Error("internal completion SQL detail");
+    },
+    executeImmediateReply: async () => {
+      immediateExecutionCalls += 1;
+      return { outcome: "persisted", dispatchId: "must-not-run" };
     },
     failEvent: async () => {
       failMarkCallCount += 1;
@@ -813,6 +1084,7 @@ test("throws safely when completion fails", async () => {
     SAFE_PROCESSOR_ERROR,
   );
   assert.equal(failMarkCallCount, 0);
+  assert.equal(immediateExecutionCalls, 0);
 });
 
 test("throws safely when failure marking itself fails", async () => {
@@ -1035,6 +1307,7 @@ test("status-only webhook is stored before the inbox event completes", async () 
       routedStatusCount: 1,
       storedStatusCount: 1,
       aiProcessingResults: [],
+      immediateReplyExecution: ZERO_IMMEDIATE_REPLY_EXECUTION,
     },
   );
   assert.deepEqual(operations, ["status", "complete"]);
@@ -1069,13 +1342,29 @@ test("mixed webhook completes only after message and status stores", async () =>
 test("status storage failure marks the inbox event failed safely", async () => {
   const sensitive = "raw provider failure and customer identifiers";
   const failCalls: Array<[string, string]> = [];
+  let immediateExecutionCalls = 0;
   const dependencies = createDependencies({
+    routePayload: async () => [
+      { id: "text", organizationId: ORGANIZATION_ID, type: "text" },
+    ],
     routeStatuses: async () => [{ id: "status" }],
+    processDurableAi: async () => ({
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: {
+        outcome: "decided",
+        decision: { action: "reply", text: "Must remain durable only" },
+      },
+    }),
     storeStatus: async () => {
       throw new Error(sensitive);
     },
     failEvent: async (eventId, errorCode) => {
       failCalls.push([eventId, errorCode]);
+    },
+    executeImmediateReply: async () => {
+      immediateExecutionCalls += 1;
+      return { outcome: "persisted", dispatchId: "must-not-run" };
     },
   });
 
@@ -1089,17 +1378,23 @@ test("status storage failure marks the inbox event failed safely", async () => {
     },
   );
   assert.deepEqual(failCalls, [[EVENT_ID, "status_storage_failed"]]);
+  assert.equal(immediateExecutionCalls, 0);
 });
 
 test("status routing failure marks the inbox event failed safely", async () => {
   const sensitive = "private routing identifiers";
   const failCalls: Array<[string, string]> = [];
+  let immediateExecutionCalls = 0;
   const dependencies = createDependencies({
     routeStatuses: async () => {
       throw new Error(sensitive);
     },
     failEvent: async (eventId, errorCode) => {
       failCalls.push([eventId, errorCode]);
+    },
+    executeImmediateReply: async () => {
+      immediateExecutionCalls += 1;
+      return { outcome: "persisted", dispatchId: "must-not-run" };
     },
   });
 
@@ -1108,6 +1403,48 @@ test("status routing failure marks the inbox event failed safely", async () => {
     SAFE_PROCESSOR_ERROR,
   );
   assert.deepEqual(failCalls, [[EVENT_ID, "status_routing_failed"]]);
+  assert.equal(immediateExecutionCalls, 0);
+});
+
+test("production inbox wires only the existing executor after durable completion", async () => {
+  const productionSource = (await readFile(INBOX_PROCESSOR_URL, "utf8"))
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+  const coreSource = (await readFile(INBOX_PROCESSOR_CORE_URL, "utf8"))
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+  const combinedSource = `${productionSource} ${coreSource}`;
+
+  assert.match(
+    productionSource,
+    /import \{ executeaireplywhatsapp \} from "\.\/ai-reply-whatsapp-executor"/,
+  );
+  assert.match(
+    productionSource,
+    /executeimmediatereply: executeaireplywhatsapp/,
+  );
+  assert.equal(
+    coreSource.match(/getimmediateaireplywhatsappexecutioncandidate/g)?.length,
+    2,
+  );
+  assert.ok(
+    coreSource.indexOf("await dependencies.completeevent(eventid)") <
+      coreSource.indexOf("await dependencies.executeimmediatereply(candidate)"),
+  );
+  assert.equal(coreSource.includes("promise.all"), false);
+
+  for (const forbidden of [
+    "outbound-text-sender",
+    "sendwhatsapptextmessage",
+    "outbound-dispatch-repository",
+    "ai-reply-whatsapp-execution-worker",
+    "graph.facebook",
+    "fetch(",
+    "cron",
+    "/api/",
+  ]) {
+    assert.equal(combinedSource.includes(forbidden), false);
+  }
 });
 
 test("delivery migration adds outbound-only lifecycle timestamps", () => {
