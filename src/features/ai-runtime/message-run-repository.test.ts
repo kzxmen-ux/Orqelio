@@ -936,11 +936,12 @@ test("worker recovers, discovers all pending work, and processes sequentially", 
       if (input.triggerMessageId === MESSAGE_ID) {
         return {
           outcome: "completed",
+          runId: RUN_ID,
           aiResult: { outcome: "failed", reason: "runtime_error" },
         };
       }
 
-      return { outcome: "already_processing" };
+      return { outcome: "already_processing", runId: RUN_ID };
     },
   });
 
@@ -997,10 +998,15 @@ test("worker counts terminal concurrency races and continues after a candidate f
           throw new Error("sensitive candidate failure");
         }
         if (input.triggerMessageId === SECOND_MESSAGE_ID) {
-          return { outcome: "already_terminal", status: "decided" };
+          return {
+            outcome: "already_terminal",
+            runId: RUN_ID,
+            status: "decided",
+          };
         }
         return {
           outcome: "completed",
+          runId: RUN_ID,
           aiResult: {
             outcome: "blocked",
             reason: "ai_configuration_not_ready",
@@ -1039,7 +1045,7 @@ test("worker aborts infrastructure failures with one fixed safe error", async ()
       },
       processDurable: async () => {
         processCalls += 1;
-        return { outcome: "already_processing" };
+        return { outcome: "already_processing", runId: RUN_ID };
       },
     }),
     (error: unknown) => {
@@ -1060,7 +1066,7 @@ test("worker aborts infrastructure failures with one fixed safe error", async ()
       },
       processDurable: async () => {
         processCalls += 1;
-        return { outcome: "already_processing" };
+        return { outcome: "already_processing", runId: RUN_ID };
       },
     }),
     new RegExp(`^Error: ${SAFE_WORKER_ERROR.replace(".", "\\.")}$`),

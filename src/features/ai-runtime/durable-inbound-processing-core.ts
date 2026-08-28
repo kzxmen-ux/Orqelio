@@ -12,13 +12,16 @@ type AiMessageRunTerminalStatus = "decided" | "blocked" | "failed";
 export type DurableAiInboundProcessingResult =
   | {
       outcome: "completed";
+      runId: string;
       aiResult: AiInboundProcessingResult;
     }
   | {
       outcome: "already_processing";
+      runId: string;
     }
   | {
       outcome: "already_terminal";
+      runId: string;
       status: AiMessageRunTerminalStatus;
     };
 
@@ -52,12 +55,13 @@ export async function processDurableAiInboundMessageWithDependencies(
   }
 
   if (claim.outcome === "already_processing") {
-    return { outcome: "already_processing" };
+    return { outcome: "already_processing", runId: claim.runId };
   }
 
   if (claim.outcome === "already_terminal") {
     return {
       outcome: "already_terminal",
+      runId: claim.runId,
       status: claim.status,
     };
   }
@@ -88,6 +92,7 @@ export async function processDurableAiInboundMessageWithDependencies(
   if (terminalResult.outcome === "already_terminal") {
     return {
       outcome: "already_terminal",
+      runId: claim.runId,
       status: terminalResult.status,
     };
   }
@@ -98,6 +103,7 @@ export async function processDurableAiInboundMessageWithDependencies(
 
   return {
     outcome: "completed",
+    runId: claim.runId,
     aiResult,
   };
 }

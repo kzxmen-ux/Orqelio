@@ -4,8 +4,13 @@ import test from "node:test";
 
 import { applyWhatsappDeliveryStatusWithRpc } from "./delivery-status-repository-core.ts";
 import { routeWhatsappDeliveryStatusesWithResolver } from "./delivery-status-routing-core.ts";
-import { processDurableAiInboundMessageWithDependencies } from "../../ai-runtime/durable-inbound-processing-core.ts";
 import {
+  processDurableAiInboundMessageWithDependencies,
+  type DurableAiInboundProcessingResult,
+} from "../../ai-runtime/durable-inbound-processing-core.ts";
+import type { AiInboundProcessingInput } from "../../ai-runtime/inbound-processing-core.ts";
+import {
+  getImmediateAiReplyWhatsappExecutionCandidate,
   processWhatsappInboxEventWithDependencies,
   type WhatsappInboxProcessorDependencies,
 } from "./inbox-processor-core.ts";
@@ -89,6 +94,99 @@ function createDependencies(
     ...overrides,
   };
 }
+
+test("newly completed reply exposes only durable execution identity", () => {
+  const input: AiInboundProcessingInput = {
+    organizationId: ORGANIZATION_ID,
+    conversationId: CONVERSATION_ID,
+    triggerMessageId: MESSAGE_ID,
+  };
+  const candidate = getImmediateAiReplyWhatsappExecutionCandidate(input, {
+    outcome: "completed",
+    runId: RUN_ID,
+    aiResult: {
+      outcome: "decided",
+      decision: { action: "reply", text: "Не включать в candidate" },
+    },
+  });
+
+  assert.deepEqual(candidate, {
+    organizationId: ORGANIZATION_ID,
+    aiMessageRunId: RUN_ID,
+  });
+  assert.deepEqual(Object.keys(candidate ?? {}).sort(), [
+    "aiMessageRunId",
+    "organizationId",
+  ]);
+  assert.equal(JSON.stringify(candidate).includes(CONVERSATION_ID), false);
+  assert.equal(JSON.stringify(candidate).includes(MESSAGE_ID), false);
+  assert.equal(JSON.stringify(candidate).includes("Не включать"), false);
+});
+
+test("immediate reply candidate excludes every non-new-reply outcome", () => {
+  const input: AiInboundProcessingInput = {
+    organizationId: ORGANIZATION_ID,
+    conversationId: CONVERSATION_ID,
+    triggerMessageId: MESSAGE_ID,
+  };
+  const excludedResults: DurableAiInboundProcessingResult[] = [
+    {
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: {
+        outcome: "decided",
+        decision: {
+          action: "booking_action_required",
+          bookingIntent: "create_appointment",
+        },
+      },
+    },
+    {
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: {
+        outcome: "decided",
+        decision: {
+          action: "handoff",
+          reasonCode: "customer_requested_human",
+          safeReason: "The customer requested a person.",
+        },
+      },
+    },
+    {
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: {
+        outcome: "decided",
+        decision: {
+          action: "no_safe_answer",
+          reason: "model_cannot_answer",
+        },
+      },
+    },
+    {
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: { outcome: "blocked", reason: "ai_configuration_missing" },
+    },
+    {
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: { outcome: "failed", reason: "provider_error" },
+    },
+    { outcome: "already_processing", runId: RUN_ID },
+    { outcome: "already_terminal", runId: RUN_ID, status: "decided" },
+    { outcome: "already_terminal", runId: RUN_ID, status: "blocked" },
+    { outcome: "already_terminal", runId: RUN_ID, status: "failed" },
+  ];
+
+  for (const durableResult of excludedResults) {
+    assert.equal(
+      getImmediateAiReplyWhatsappExecutionCandidate(input, durableResult),
+      null,
+    );
+  }
+});
 
 test("processes a claimed event", async () => {
   let completedEventId: string | null = null;
@@ -184,6 +282,7 @@ test("accepted text runs store, claim, runtime, terminal write, then completion"
       aiProcessingResults: [
         {
           outcome: "completed",
+          runId: RUN_ID,
           aiResult: {
             outcome: "decided",
             decision: { action: "reply", text: "Здравствуйте!" },
@@ -219,7 +318,7 @@ test("does not invoke AI when inbound text persistence fails", async () => {
     },
     processDurableAi: async () => {
       aiCallCount += 1;
-      return { outcome: "already_processing" };
+      return { outcome: "already_processing", runId: RUN_ID };
     },
   });
 
@@ -238,7 +337,7 @@ test("does not invoke AI for an unsupported inbound message type", async () => {
     ],
     processDurableAi: async () => {
       aiCallCount += 1;
-      return { outcome: "already_processing" };
+      return { outcome: "already_processing", runId: RUN_ID };
     },
   });
 
@@ -259,6 +358,7 @@ test("keeps an AI failure explicit without failing the durable event", async () 
     ],
     processDurableAi: async () => ({
       outcome: "completed",
+      runId: RUN_ID,
       aiResult: { outcome: "failed", reason: "provider_error" },
     }),
     completeEvent: async () => {
@@ -275,6 +375,7 @@ test("keeps an AI failure explicit without failing the durable event", async () 
   assert.deepEqual(result.aiProcessingResults, [
     {
       outcome: "completed",
+      runId: RUN_ID,
       aiResult: { outcome: "failed", reason: "provider_error" },
     },
   ]);
@@ -443,6 +544,7 @@ test("duplicate text with no run claims and executes AI exactly once", async () 
       aiProcessingResults: [
         {
           outcome: "completed",
+          runId: RUN_ID,
           aiResult: {
             outcome: "blocked",
             reason: "ai_configuration_missing",
@@ -524,8 +626,14 @@ for (const messagePersistenceOutcome of ["accepted", "duplicate"] as const) {
       assert.deepEqual(
         result.aiProcessingResults,
         claimOutcome === "already_processing"
-          ? [{ outcome: "already_processing" }]
-          : [{ outcome: "already_terminal", status: "decided" }],
+          ? [{ outcome: "already_processing", runId: RUN_ID }]
+          : [
+              {
+                outcome: "already_terminal",
+                runId: RUN_ID,
+                status: "decided",
+              },
+            ],
       );
     });
   }

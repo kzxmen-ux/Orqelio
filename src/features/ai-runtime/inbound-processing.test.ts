@@ -163,6 +163,7 @@ test("durable orchestration claims, runs, and stores a reply in order", async ()
   ]);
   assert.deepEqual(result, {
     outcome: "completed",
+    runId: RUN_ID,
     aiResult: {
       outcome: "decided",
       decision: { action: "reply", text: "Здравствуйте!" },
@@ -190,7 +191,7 @@ test("already_processing skips runtime and terminal persistence", async () => {
         return { outcome: "stored", runId: RUN_ID, status: "failed" };
       },
     }),
-    { outcome: "already_processing" },
+    { outcome: "already_processing", runId: RUN_ID },
   );
   assert.equal(downstreamCalls, 0);
 });
@@ -215,7 +216,7 @@ test("already_terminal skips runtime and exposes only the safe status", async ()
         return { outcome: "stored", runId: RUN_ID, status: "failed" };
       },
     }),
-    { outcome: "already_terminal", status: "blocked" },
+    { outcome: "already_terminal", runId: RUN_ID, status: "blocked" },
   );
   assert.equal(downstreamCalls, 0);
 });
@@ -255,7 +256,11 @@ test("booking and handoff decisions are persisted only as decided results", asyn
       },
     });
 
-    assert.deepEqual(result, { outcome: "completed", aiResult: decision });
+    assert.deepEqual(result, {
+      outcome: "completed",
+      runId: RUN_ID,
+      aiResult: decision,
+    });
   }
 
   assert.deepEqual(stored, decisions);
@@ -287,7 +292,7 @@ test("blocked and runtime failures are persisted as valid terminal results", asy
       },
     });
 
-    assert.deepEqual(result, { outcome: "completed", aiResult });
+    assert.deepEqual(result, { outcome: "completed", runId: RUN_ID, aiResult });
   }
 
   assert.deepEqual(stored, safeResults);
@@ -314,6 +319,7 @@ test("an unexpected runtime exception is persisted as runtime_error", async () =
     }),
     {
       outcome: "completed",
+      runId: RUN_ID,
       aiResult: { outcome: "failed", reason: "runtime_error" },
     },
   );
@@ -380,6 +386,28 @@ test("terminal repository exceptions are safely normalized after one AI call", a
   assert.equal(aiCalls, 1);
 });
 
+test("terminal result run identity mismatch fails safely", async () => {
+  const mismatchedRunId = "55555555-5555-4555-8555-555555555555";
+
+  await assert.rejects(
+    processDurableAiInboundMessageWithDependencies(INPUT, {
+      claimRun: async () => ({
+        outcome: "claimed",
+        runId: RUN_ID,
+        status: "processing",
+        attemptCount: 1,
+      }),
+      processAi: async () => ({ outcome: "blocked", reason: "ai_configuration_missing" }),
+      storeTerminalResult: async () => ({
+        outcome: "stored",
+        runId: mismatchedRunId,
+        status: "blocked",
+      }),
+    }),
+    /^Error: Durable AI inbound processing failed\.$/,
+  );
+});
+
 test("a terminal write race returns already_terminal without another AI call", async () => {
   let aiCalls = 0;
 
@@ -401,7 +429,7 @@ test("a terminal write race returns already_terminal without another AI call", a
         status: "decided",
       }),
     }),
-    { outcome: "already_terminal", status: "decided" },
+    { outcome: "already_terminal", runId: RUN_ID, status: "decided" },
   );
   assert.equal(aiCalls, 1);
 });
@@ -418,13 +446,24 @@ test("production orchestration contains no outbound, Meta, or CRM sender", async
     sourceUrls.map((url) => readFile(url, "utf8")),
   )).join("\n");
 
+  assert.equal(
+    sources.match(/getImmediateAiReplyWhatsappExecutionCandidate/g)?.length,
+    1,
+  );
+
   for (const forbidden of [
+    "executeAiReplyWhatsapp",
+    "sendWhatsappTextMessage",
     "sendWhatsappConversationText",
     "MetaWhatsAppProvider",
     "outbound-message",
     "outbound-text",
+    "outbound-text-sender",
     "integrations/crm",
     "graph.facebook.com",
+    "fetch(",
+    "message-run-recovery-worker",
+    "/cron/",
   ]) {
     assert.equal(sources.includes(forbidden), false);
   }

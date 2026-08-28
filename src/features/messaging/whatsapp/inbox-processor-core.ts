@@ -1,6 +1,29 @@
 import type { DurableAiInboundProcessingResult } from "../../ai-runtime/durable-inbound-processing-core.ts";
 import type { AiInboundProcessingInput } from "../../ai-runtime/inbound-processing-core.ts";
 
+export type ImmediateAiReplyWhatsappExecutionCandidate = {
+  organizationId: string;
+  aiMessageRunId: string;
+};
+
+export function getImmediateAiReplyWhatsappExecutionCandidate(
+  input: AiInboundProcessingInput,
+  durableResult: DurableAiInboundProcessingResult,
+): ImmediateAiReplyWhatsappExecutionCandidate | null {
+  if (
+    durableResult.outcome !== "completed" ||
+    durableResult.aiResult.outcome !== "decided" ||
+    durableResult.aiResult.decision.action !== "reply"
+  ) {
+    return null;
+  }
+
+  return {
+    organizationId: input.organizationId,
+    aiMessageRunId: durableResult.runId,
+  };
+}
+
 export type WhatsappInboxProcessorResult =
   | {
       outcome: "processed";
