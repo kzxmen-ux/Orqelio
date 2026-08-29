@@ -6,9 +6,42 @@ import {
   resolveSafeBookingToolsForOrganizationCore,
   type BookingContextResolverDependencies,
 } from "./booking-context-resolver-core.ts";
+import { parseBookingCrmConnectionRows } from "./booking-context-resolver-rows.ts";
 import type { TrustedBookingExecutionContext } from "./safe-booking-tools-core.ts";
 
 const ORGANIZATION_ID = "11111111-1111-4111-8111-111111111111";
+
+test("maps provider-neutral configuration and drops unknown fields", () => {
+  const connections = parseBookingCrmConnectionRows([
+    {
+      configuration: {
+        application_id: "provider-application-v2",
+        location_ids: ["provider-location"],
+        salon_id: "branch:alpha",
+        provider_specific_option: { privateShape: true },
+      },
+      created_at: "2026-08-29T00:00:00.000Z",
+      display_name: "Provider-neutral CRM",
+      id: "22222222-2222-4222-8222-222222222222",
+      last_sync_at: null,
+      organization_id: ORGANIZATION_ID,
+      provider: "custom",
+      status: "connected",
+      updated_at: "2026-08-29T00:00:00.000Z",
+    },
+  ]);
+
+  assert.notEqual(connections, null);
+  assert.deepEqual(connections?.[0]?.configuration, {
+    applicationId: "provider-application-v2",
+    locationIds: ["provider-location"],
+    salonId: "branch:alpha",
+  });
+  assert.equal(
+    "provider_specific_option" in (connections?.[0]?.configuration ?? {}),
+    false,
+  );
+});
 
 function createConnection(
   overrides: Partial<CrmConnection> = {},
