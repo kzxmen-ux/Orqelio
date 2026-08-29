@@ -15,7 +15,9 @@ import {
 } from "./openai-transport-core.ts";
 import type { AiDecisionPrompt } from "./prompt-builder.ts";
 import {
+  MAX_MODEL_BOOKING_REQUEST_FIELD_CHARACTERS,
   MODEL_BOOKING_INTENTS,
+  MODEL_BOOKING_REQUEST_FIELDS,
   MODEL_HANDOFF_TRIGGERS,
   MODEL_RESPONSE_INTENTS,
 } from "./decision-types.ts";
@@ -24,6 +26,7 @@ const VALID_PROPOSAL = {
   responseIntent: "reply",
   replyText: "Здравствуйте!",
   bookingIntent: "none",
+  bookingRequest: null,
   handoffTrigger: "none",
 } as const;
 
@@ -121,11 +124,12 @@ test("builds the bounded Responses API structured-output request", async () => {
   assert.equal(Object.hasOwn(request, "metadata"), false);
 });
 
-test("schema has exactly four required fields and aligned enums", () => {
+test("schema requires the exact proposal and bookingRequest shapes", () => {
   assert.deepEqual(MODEL_PROPOSAL_JSON_SCHEMA.required, [
     "responseIntent",
     "replyText",
     "bookingIntent",
+    "bookingRequest",
     "handoffTrigger",
   ]);
   assert.equal(MODEL_PROPOSAL_JSON_SCHEMA.additionalProperties, false);
@@ -145,6 +149,29 @@ test("schema has exactly four required fields and aligned enums", () => {
     MODEL_PROPOSAL_JSON_SCHEMA.properties.replyText.type,
     ["string", "null"],
   );
+
+  const bookingRequestSchema =
+    MODEL_PROPOSAL_JSON_SCHEMA.properties.bookingRequest;
+  assert.deepEqual(bookingRequestSchema.type, ["object", "null"]);
+  assert.deepEqual(
+    bookingRequestSchema.required,
+    MODEL_BOOKING_REQUEST_FIELDS,
+  );
+  assert.equal(bookingRequestSchema.additionalProperties, false);
+  assert.deepEqual(
+    Object.keys(bookingRequestSchema.properties),
+    MODEL_BOOKING_REQUEST_FIELDS,
+  );
+  for (const field of MODEL_BOOKING_REQUEST_FIELDS) {
+    assert.deepEqual(
+      bookingRequestSchema.properties[field].type,
+      ["string", "null"],
+    );
+    assert.equal(
+      bookingRequestSchema.properties[field].maxLength,
+      MAX_MODEL_BOOKING_REQUEST_FIELD_CHARACTERS,
+    );
+  }
 });
 
 test("returns only a validated proposal and normalized usage", async () => {

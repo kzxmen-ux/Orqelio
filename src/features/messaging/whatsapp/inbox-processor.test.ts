@@ -155,6 +155,15 @@ test("immediate reply candidate excludes every non-new-reply outcome", () => {
         decision: {
           action: "booking_action_required",
           bookingIntent: "create_appointment",
+          bookingRequest: {
+            serviceQuery: null,
+            staffQuery: null,
+            dateText: null,
+            timeText: null,
+            customerName: null,
+            customerPhone: null,
+            appointmentReference: null,
+          },
         },
       },
     },
@@ -215,6 +224,15 @@ test("non-reply and duplicate durable outcomes never invoke the executor", async
         decision: {
           action: "booking_action_required",
           bookingIntent: "create_appointment",
+          bookingRequest: {
+            serviceQuery: null,
+            staffQuery: null,
+            dateText: null,
+            timeText: null,
+            customerName: null,
+            customerPhone: null,
+            appointmentReference: null,
+          },
         },
       },
     },

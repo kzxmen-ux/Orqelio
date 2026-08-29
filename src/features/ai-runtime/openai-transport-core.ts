@@ -1,6 +1,8 @@
 import { validateModelProposal } from "./decision-core.ts";
 import {
+  MAX_MODEL_BOOKING_REQUEST_FIELD_CHARACTERS,
   MODEL_BOOKING_INTENTS,
+  MODEL_BOOKING_REQUEST_FIELDS,
   MODEL_HANDOFF_TRIGGERS,
   MODEL_RESPONSE_INTENTS,
   type ModelProposal,
@@ -15,8 +17,14 @@ const MODEL_PROPOSAL_FIELDS = [
   "responseIntent",
   "replyText",
   "bookingIntent",
+  "bookingRequest",
   "handoffTrigger",
 ] as const;
+
+const BOOKING_REQUEST_VALUE_JSON_SCHEMA = {
+  type: ["string", "null"],
+  maxLength: MAX_MODEL_BOOKING_REQUEST_FIELD_CHARACTERS,
+} as const;
 
 export const MODEL_PROPOSAL_JSON_SCHEMA = {
   type: "object",
@@ -31,6 +39,20 @@ export const MODEL_PROPOSAL_JSON_SCHEMA = {
     bookingIntent: {
       type: "string",
       enum: [...MODEL_BOOKING_INTENTS],
+    },
+    bookingRequest: {
+      type: ["object", "null"],
+      properties: {
+        serviceQuery: BOOKING_REQUEST_VALUE_JSON_SCHEMA,
+        staffQuery: BOOKING_REQUEST_VALUE_JSON_SCHEMA,
+        dateText: BOOKING_REQUEST_VALUE_JSON_SCHEMA,
+        timeText: BOOKING_REQUEST_VALUE_JSON_SCHEMA,
+        customerName: BOOKING_REQUEST_VALUE_JSON_SCHEMA,
+        customerPhone: BOOKING_REQUEST_VALUE_JSON_SCHEMA,
+        appointmentReference: BOOKING_REQUEST_VALUE_JSON_SCHEMA,
+      },
+      required: [...MODEL_BOOKING_REQUEST_FIELDS],
+      additionalProperties: false,
     },
     handoffTrigger: {
       type: "string",

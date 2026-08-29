@@ -15,6 +15,15 @@ const INPUT: AiInboundProcessingInput = {
   triggerMessageId: "33333333-3333-4333-8333-333333333333",
 };
 const RUN_ID = "44444444-4444-4444-8444-444444444444";
+const BOOKING_REQUEST = {
+  serviceQuery: "стрижка",
+  staffQuery: null,
+  dateText: "завтра",
+  timeText: "в 15:00",
+  customerName: null,
+  customerPhone: null,
+  appointmentReference: null,
+} as const;
 
 test("passes only the technical identifiers and preserves a reply decision", async () => {
   const receivedInputs: unknown[] = [];
@@ -46,6 +55,7 @@ test("preserves booking_action_required as a decision only", async () => {
         decision: {
           action: "booking_action_required",
           bookingIntent: "create_appointment",
+          bookingRequest: BOOKING_REQUEST,
         },
         model: "test-model",
         usage: null,
@@ -56,6 +66,7 @@ test("preserves booking_action_required as a decision only", async () => {
       decision: {
         action: "booking_action_required",
         bookingIntent: "create_appointment",
+        bookingRequest: BOOKING_REQUEST,
       },
     },
   );
@@ -228,6 +239,7 @@ test("booking and handoff decisions are persisted only as decided results", asyn
       decision: {
         action: "booking_action_required",
         bookingIntent: "create_appointment",
+        bookingRequest: BOOKING_REQUEST,
       },
     },
     {

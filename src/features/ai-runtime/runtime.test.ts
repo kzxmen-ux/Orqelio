@@ -201,6 +201,7 @@ test("returns a decided reply for a ready context and valid reply proposal", asy
         responseIntent: "reply",
         replyText: "Здравствуйте!",
         bookingIntent: "none",
+        bookingRequest: null,
         handoffTrigger: "none",
       }),
     ),
@@ -223,6 +224,15 @@ test("preserves booking_action_required from the deterministic decision", async 
         responseIntent: "booking_action_required",
         replyText: null,
         bookingIntent: "create_appointment",
+        bookingRequest: {
+          serviceQuery: "стрижка",
+          staffQuery: null,
+          dateText: "завтра",
+          timeText: "в 15:00",
+          customerName: null,
+          customerPhone: null,
+          appointmentReference: null,
+        },
         handoffTrigger: "none",
       }),
     ),
@@ -233,6 +243,15 @@ test("preserves booking_action_required from the deterministic decision", async 
   assert.deepEqual(result.decision, {
     action: "booking_action_required",
     bookingIntent: "create_appointment",
+    bookingRequest: {
+      serviceQuery: "стрижка",
+      staffQuery: null,
+      dateText: "завтра",
+      timeText: "в 15:00",
+      customerName: null,
+      customerPhone: null,
+      appointmentReference: null,
+    },
   });
 });
 
@@ -245,6 +264,7 @@ test("preserves a mandatory handoff decision", async () => {
         responseIntent: "handoff_candidate",
         replyText: null,
         bookingIntent: "none",
+        bookingRequest: null,
         handoffTrigger: "customer_requests_human",
       }),
     ),
@@ -264,6 +284,7 @@ test("preserves no_safe_answer without orchestration fallback text", async () =>
         responseIntent: "cannot_answer",
         replyText: null,
         bookingIntent: "none",
+        bookingRequest: null,
         handoffTrigger: "none",
       }),
     ),
@@ -330,6 +351,7 @@ test("maps an unexpected context-loader exception to runtime_error", async () =>
         responseIntent: "reply",
         replyText: "unused",
         bookingIntent: "none",
+        bookingRequest: null,
         handoffTrigger: "none",
       }),
   });
@@ -360,6 +382,7 @@ test("returns only safe decision metadata and omits context and provider details
           responseIntent: "reply",
           replyText: "Безопасный ответ",
           bookingIntent: "none",
+          bookingRequest: null,
           handoffTrigger: "none",
         },
         null,
