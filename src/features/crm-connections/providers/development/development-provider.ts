@@ -5,8 +5,12 @@ import type {
   BookingProviderConnectionMetadata,
   BookingProviderCredentialValidation,
 } from "../booking-provider";
+import type { BookingProviderOperations } from "../booking-operations";
+import { developmentBookingOperations } from "./development-booking-operations-core";
 
 export class DevelopmentProvider implements BookingProvider {
+  readonly operations: BookingProviderOperations = developmentBookingOperations;
+
   disconnect(): { status: "disconnected" } {
     return { status: "disconnected" };
   }
