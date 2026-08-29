@@ -4,6 +4,7 @@ import type {
   CrmConnection,
   CrmProvider,
 } from "../types";
+import type { BookingProviderOperations } from "./booking-operations";
 
 export type BookingProviderCredentialValidation =
   | {
@@ -41,6 +42,8 @@ export type BookingProviderMetadataOptions = {
 };
 
 export interface BookingProvider {
+  operations?: BookingProviderOperations;
+
   disconnect(): { status: "disconnected" };
 
   getConnectionMetadata(
