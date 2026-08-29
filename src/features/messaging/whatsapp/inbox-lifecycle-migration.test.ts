@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const migrationUrl = new URL(
-  "../../../../supabase/migrations/20260820114953_whatsapp_inbox_lifecycle.sql",
+  "../../../../supabase/migrations/20260820120047_whatsapp_inbox_lifecycle.sql",
   import.meta.url,
 );
 

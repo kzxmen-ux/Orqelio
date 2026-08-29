@@ -47,7 +47,7 @@ const INBOX_PROCESSOR_CORE_URL = new URL(
   import.meta.url,
 );
 const MIGRATION_URL = new URL(
-  "../../../../supabase/migrations/20260822202836_whatsapp_outbound_delivery_status.sql",
+  "../../../../supabase/migrations/20260822203755_whatsapp_outbound_delivery_status.sql",
   import.meta.url,
 );
 const MIGRATION_SQL = (await readFile(MIGRATION_URL, "utf8"))

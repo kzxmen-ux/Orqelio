@@ -27,14 +27,14 @@ const INPUT = {
 const SAFE_REPOSITORY_ERROR = "AI message run repository operation failed.";
 const SAFE_WORKER_ERROR = "AI message run recovery worker failed.";
 const MIGRATION_URL = new URL(
-  "../../../supabase/migrations/20260826201736_ai_message_runs.sql",
+  "../../../supabase/migrations/20260826202738_ai_message_runs.sql",
   import.meta.url,
 );
 const MIGRATION_SQL = (await readFile(MIGRATION_URL, "utf8"))
   .replace(/\s+/g, " ")
   .toLowerCase();
 const RECOVERY_MIGRATION_URL = new URL(
-  "../../../supabase/migrations/20260826204647_ai_message_run_stale_recovery.sql",
+  "../../../supabase/migrations/20260826205410_ai_message_run_stale_recovery.sql",
   import.meta.url,
 );
 const RECOVERY_MIGRATION_SQL = (
@@ -43,7 +43,7 @@ const RECOVERY_MIGRATION_SQL = (
   .replace(/\s+/g, " ")
   .toLowerCase();
 const DISPATCHER_MIGRATION_URL = new URL(
-  "../../../supabase/migrations/20260826205939_ai_message_run_pending_dispatcher.sql",
+  "../../../supabase/migrations/20260826211216_ai_message_run_pending_dispatcher.sql",
   import.meta.url,
 );
 const DISPATCHER_MIGRATION_SQL = (

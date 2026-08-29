@@ -3,11 +3,11 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const baseMigrationUrl = new URL(
-  "../../../../supabase/migrations/20260820113406_whatsapp_conversation_persistence.sql",
+  "../../../../supabase/migrations/20260820114032_whatsapp_conversation_persistence.sql",
   import.meta.url,
 );
 const outboundMigrationUrl = new URL(
-  "../../../../supabase/migrations/20260822162603_whatsapp_outbound_message_persistence.sql",
+  "../../../../supabase/migrations/20260822163632_whatsapp_outbound_message_persistence.sql",
   import.meta.url,
 );
 

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const migrationPath = new URL(
-  "../../../../supabase/migrations/20260820110554_whatsapp_connection_mapping.sql",
+  "../../../../supabase/migrations/20260820112148_whatsapp_connection_mapping.sql",
   import.meta.url,
 );
 const migration = readFileSync(migrationPath, "utf8");

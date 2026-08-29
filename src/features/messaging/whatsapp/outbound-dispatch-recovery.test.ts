@@ -38,15 +38,15 @@ const RECIPIENT_WA_ID = "77001234567";
 const SAFE_REPOSITORY_ERROR =
   "WhatsApp outbound dispatch repository operation failed.";
 const AI_REPLY_BINDING_MIGRATION_URL = new URL(
-  "../../../../supabase/migrations/20260827142909_bind_ai_reply_to_whatsapp_dispatch.sql",
+  "../../../../supabase/migrations/20260827170028_bind_ai_reply_to_whatsapp_dispatch.sql",
   import.meta.url,
 );
 const AI_REPLY_EXECUTION_CLAIM_MIGRATION_URL = new URL(
-  "../../../../supabase/migrations/20260827170826_claim_ai_reply_whatsapp_dispatch_execution.sql",
+  "../../../../supabase/migrations/20260827171522_claim_ai_reply_whatsapp_dispatch_execution.sql",
   import.meta.url,
 );
 const AI_REPLY_QUARANTINE_MIGRATION_URL = new URL(
-  "../../../../supabase/migrations/20260827171938_quarantine_stale_ai_reply_whatsapp_dispatches.sql",
+  "../../../../supabase/migrations/20260827172748_quarantine_stale_ai_reply_whatsapp_dispatches.sql",
   import.meta.url,
 );
 const AI_REPLY_EXECUTOR_URL = new URL(
@@ -58,11 +58,11 @@ const AI_REPLY_EXECUTOR_CORE_URL = new URL(
   import.meta.url,
 );
 const AI_REPLY_EXECUTION_DISCOVERY_MIGRATION_URL = new URL(
-  "../../../../supabase/migrations/20260827174407_list_actionable_ai_reply_whatsapp_executions.sql",
+  "../../../../supabase/migrations/20260827180527_list_actionable_ai_reply_whatsapp_executions.sql",
   import.meta.url,
 );
 const AI_REPLY_INACTIVE_FINALIZATION_FIX_MIGRATION_URL = new URL(
-  "../../../../supabase/migrations/20260827175625_allow_inactive_ai_reply_finalization_recovery.sql",
+  "../../../../supabase/migrations/20260827180537_allow_inactive_ai_reply_finalization_recovery.sql",
   import.meta.url,
 );
 const AI_REPLY_EXECUTION_WORKER_URL = new URL(
@@ -551,7 +551,7 @@ test("repository rejects invalid identity before RPC and hides database details"
 test("migration defines tenant-safe journal, transitions, recovery and grants", async () => {
   const sql = await readFile(
     new URL(
-      "../../../../supabase/migrations/20260822205023_whatsapp_outbound_dispatch_recovery.sql",
+      "../../../../supabase/migrations/20260822210736_whatsapp_outbound_dispatch_recovery.sql",
       import.meta.url,
     ),
     "utf8",
@@ -590,7 +590,7 @@ test("AI reply binding adds a nullable restrictive FK with one-dispatch uniquene
   const migration = await readAiReplyBindingMigration();
   const existingOutboundMigration = await readFile(
     new URL(
-      "../../../../supabase/migrations/20260822205023_whatsapp_outbound_dispatch_recovery.sql",
+      "../../../../supabase/migrations/20260822210736_whatsapp_outbound_dispatch_recovery.sql",
       import.meta.url,
     ),
     "utf8",

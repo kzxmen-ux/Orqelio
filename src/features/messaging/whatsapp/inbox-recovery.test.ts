@@ -13,7 +13,7 @@ const EVENT_ONE = "11111111-1111-4111-8111-111111111111";
 const EVENT_TWO = "22222222-2222-4222-8222-222222222222";
 const EVENT_THREE = "33333333-3333-4333-8333-333333333333";
 const RECOVERY_MIGRATION_URL = new URL(
-  "../../../../supabase/migrations/20260823180809_whatsapp_inbox_recovery.sql",
+  "../../../../supabase/migrations/20260823182530_whatsapp_inbox_recovery.sql",
   import.meta.url,
 );
 

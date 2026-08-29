@@ -8,14 +8,14 @@ const sql = readFileSync(
 );
 const timestampFixSql = readFileSync(
   new URL(
-    "../../../supabase/migrations/20260826105242_fix_ai_manager_settings_timestamp_collision.sql",
+    "../../../supabase/migrations/20260826105840_fix_ai_manager_settings_timestamp_collision.sql",
     import.meta.url,
   ),
   "utf8",
 );
 const serviceRoleReadGrantSql = readFileSync(
   new URL(
-    "../../../supabase/migrations/20260826112247_grant_ai_manager_configuration_read_to_service_role.sql",
+    "../../../supabase/migrations/20260826112638_grant_ai_manager_configuration_read_to_service_role.sql",
     import.meta.url,
   ),
   "utf8",
