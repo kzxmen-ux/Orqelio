@@ -8,8 +8,9 @@ export type BookingWhatsappContext = {
   language: "ru" | "kk" | null;
   dispatch: WhatsappOutboundDispatchResult | null;
 };
-export type AiBookingWhatsappExecutionResult = AiReplyWhatsappExecutionResult | { outcome: "already_executing" };
+export type AiBookingWhatsappExecutionResult = AiReplyWhatsappExecutionResult | { outcome: "already_executing" | "automation_disabled" };
 export type AiBookingWhatsappDependencies = {
+  isBookingAutomationAllowed(input: AiReplyWhatsappExecutionInput): Promise<boolean>;
   loadContext(input: AiReplyWhatsappExecutionInput): Promise<BookingWhatsappContext>;
   loadTimeContext(organizationId: string): Promise<BookingTimeContextResult>;
   executeAiBookingAction(input: AiReplyWhatsappExecutionInput): Promise<AiBookingActionExecutionResult>;
@@ -23,6 +24,7 @@ export async function executeAiBookingWhatsappWithDependencies(
 ): Promise<AiBookingWhatsappExecutionResult> {
   try {
     const identity = { organizationId: input.organizationId, aiMessageRunId: input.aiMessageRunId };
+    if (!await dependencies.isBookingAutomationAllowed(identity)) return { outcome: "automation_disabled" };
     const context = await dependencies.loadContext(identity);
     // Recovery uses the immutable prepared text, without CRM, locale lookup or
     // another booking call. The existing outbound executor owns every send.

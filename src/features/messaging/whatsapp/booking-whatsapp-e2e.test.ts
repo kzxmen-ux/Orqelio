@@ -35,6 +35,7 @@ function harness(result?: AiBookingActionExecutionResult) {
   const faults = { prepare: false, send: false, acceptance: false, finalize: false };
   const setState = (state: WhatsappOutboundDispatchState) => { dispatch = { dispatchId, state }; return dispatch; };
   const deps: AiBookingWhatsappDependencies = {
+    isBookingAutomationAllowed: async () => true,
     loadContext: async (identity) => { assert.deepEqual(identity, input); return { language: "ru", dispatch }; },
     loadTimeContext: async (organizationId) => { assert.equal(organizationId, org); return { success: true, context: { timeZone: locale.timeZone } }; },
     executeAiBookingAction: async (identity) => {
@@ -89,6 +90,41 @@ test("booking candidate contains only durable identity; reply candidate remains 
   assert.equal(getImmediateAiBookingExecutionCandidate(aiInput, reply), null);
   assert.deepEqual(getImmediateAiReplyWhatsappExecutionCandidate(aiInput, reply), input);
   for (const value of [{ outcome: "already_terminal" as const, runId: run, status: "decided" as const }, { outcome: "already_processing" as const, runId: run }]) assert.equal(getImmediateAiBookingExecutionCandidate(aiInput, value), null);
+});
+
+for (const scenario of [
+  { name: "disabled organization", activation: null, created: "2026-09-01T10:00:00Z", allowed: false },
+  { name: "pre-activation run", activation: "2026-09-01T10:00:00Z", created: "2026-09-01T09:59:59Z", allowed: false },
+  { name: "post-activation run", activation: "2026-09-01T10:00:00Z", created: "2026-09-01T10:00:01Z", allowed: true },
+  { name: "run exactly at activation", activation: "2026-09-01T10:00:00Z", created: "2026-09-01T10:00:00Z", allowed: true },
+]) {
+  test(`rollout: ${scenario.name} controls immediate booking and outbound`, async () => {
+    const h = harness();
+    h.deps.isBookingAutomationAllowed = async (identity) => {
+      assert.deepEqual(identity, input);
+      // Fixture stands in for the DB predicate, also verified read-only in SQL.
+      return scenario.activation !== null && Date.parse(scenario.created) >= Date.parse(scenario.activation);
+    };
+    if (!scenario.allowed) h.deps.loadContext = async () => { assert.fail("disabled run must stop before context, CRM or dispatch"); };
+    const result = await h.execute();
+    assert.equal(result.outcome, scenario.allowed ? "persisted" : "automation_disabled");
+    assert.equal(h.counts().creates, scenario.allowed ? 1 : 0);
+    assert.equal(h.counts().sends, scenario.allowed ? 1 : 0);
+  });
+}
+
+test("normal reply execution does not consult booking rollout gate", async () => {
+  let replies = 0;
+  await processWhatsappInboxEventWithDependencies(run, {
+    claimEvent: async () => ({ outcome: "claimed", rawPayload: {} }),
+    routePayload: async () => [{ organizationId: org, type: "text" }], routeStatuses: async () => [],
+    storeMessage: async () => ({ outcome: "accepted", conversationId: dispatchId, messageId: run }), storeStatus: async () => undefined,
+    processDurableAi: async () => ({ outcome: "completed", runId: run, aiResult: { outcome: "decided", decision: { action: "reply", text: "Здравствуйте" } } }),
+    completeEvent: async () => undefined, failEvent: async () => undefined,
+    executeImmediateReply: async () => { replies++; return { outcome: "persisted", dispatchId }; },
+    executeImmediateBooking: async () => { assert.fail("reply must not depend on booking gate"); },
+  });
+  assert.equal(replies, 1);
 });
 
 test("inbox completes durable event before booking execution and does not use reply path", async () => {

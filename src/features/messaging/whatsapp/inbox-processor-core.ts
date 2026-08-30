@@ -302,6 +302,7 @@ export async function processWhatsappInboxEventWithDependencies<
     try {
       const execution = await dependencies.executeImmediateBooking(candidate);
       switch (execution.outcome) {
+        case "automation_disabled": break;
         case "persisted": immediateBookingExecution.persistedCount += 1; break;
         case "provider_accepted": immediateBookingExecution.providerAcceptedCount += 1; break;
         case "already_executing":

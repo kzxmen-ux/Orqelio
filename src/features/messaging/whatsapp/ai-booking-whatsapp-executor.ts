@@ -1,4 +1,5 @@
 import "server-only";
+import { isBookingAutomationAllowed } from "../../booking/booking-automation-gate";
 
 import { executeAiBookingAction } from "../../booking/ai-booking-action-executor";
 import { loadBookingTimeContextForOrganization } from "../../booking/booking-time-context";
@@ -9,6 +10,7 @@ import type { AiReplyWhatsappExecutionInput } from "./ai-reply-whatsapp-executor
 
 export function executeAiBookingWhatsapp(input: AiReplyWhatsappExecutionInput) {
   return executeAiBookingWhatsappWithDependencies(input, {
+    isBookingAutomationAllowed,
     loadContext: loadAiBookingWhatsappContext,
     loadTimeContext: loadBookingTimeContextForOrganization,
     executeAiBookingAction,

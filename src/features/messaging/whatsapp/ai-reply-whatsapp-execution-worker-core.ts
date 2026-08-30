@@ -71,6 +71,8 @@ export async function runAiReplyWhatsappExecutionWorkerWithDependencies(
       });
 
       switch (execution.outcome) {
+        case "automation_disabled":
+          break;
         case "persisted":
           result.persistedCount += 1;
           break;
