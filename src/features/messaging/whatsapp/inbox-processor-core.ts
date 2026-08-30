@@ -1,11 +1,21 @@
 import type { DurableAiInboundProcessingResult } from "../../ai-runtime/durable-inbound-processing-core.ts";
 import type { AiInboundProcessingInput } from "../../ai-runtime/inbound-processing-core.ts";
 import type { AiReplyWhatsappExecutionResult } from "./ai-reply-whatsapp-executor-core";
+import type { AiBookingWhatsappExecutionResult } from "./ai-booking-whatsapp-executor-core";
 
 export type ImmediateAiReplyWhatsappExecutionCandidate = {
   organizationId: string;
   aiMessageRunId: string;
 };
+
+export function getImmediateAiBookingExecutionCandidate(
+  input: AiInboundProcessingInput,
+  durableResult: DurableAiInboundProcessingResult,
+): ImmediateAiReplyWhatsappExecutionCandidate | null {
+  if (durableResult.outcome !== "completed" || durableResult.aiResult.outcome !== "decided" ||
+    durableResult.aiResult.decision.action !== "booking_action_required") return null;
+  return { organizationId: input.organizationId, aiMessageRunId: durableResult.runId };
+}
 
 export function getImmediateAiReplyWhatsappExecutionCandidate(
   input: AiInboundProcessingInput,
@@ -56,6 +66,7 @@ export type WhatsappInboxProcessorResult =
       storedStatusCount: number;
       aiProcessingResults: readonly DurableAiInboundProcessingResult[];
       immediateReplyExecution: ImmediateReplyExecutionSummary;
+      immediateBookingExecution?: ImmediateReplyExecutionSummary;
     }
   | {
       outcome: "unavailable";
@@ -94,6 +105,9 @@ export type WhatsappInboxProcessorDependencies<TMessage, TStatus> = {
   executeImmediateReply: (
     input: ImmediateAiReplyWhatsappExecutionCandidate,
   ) => Promise<AiReplyWhatsappExecutionResult>;
+  executeImmediateBooking: (
+    input: ImmediateAiReplyWhatsappExecutionCandidate,
+  ) => Promise<AiBookingWhatsappExecutionResult>;
   completeEvent: (eventId: string) => Promise<unknown>;
   failEvent: (eventId: string, errorCode: string) => Promise<unknown>;
 };
@@ -195,6 +209,7 @@ export async function processWhatsappInboxEventWithDependencies<
   const aiProcessingResults: DurableAiInboundProcessingResult[] = [];
   const immediateReplyCandidates: ImmediateAiReplyWhatsappExecutionCandidate[] =
     [];
+  const immediateBookingCandidates: ImmediateAiReplyWhatsappExecutionCandidate[] = [];
 
   for (const message of messages) {
     let storeResult: StoreResult;
@@ -229,6 +244,8 @@ export async function processWhatsappInboxEventWithDependencies<
       );
 
       if (candidate) immediateReplyCandidates.push(candidate);
+      const bookingCandidate = getImmediateAiBookingExecutionCandidate(aiInput, durableResult);
+      if (bookingCandidate) immediateBookingCandidates.push(bookingCandidate);
     }
   }
 
@@ -280,6 +297,23 @@ export async function processWhatsappInboxEventWithDependencies<
     }
   }
 
+  const immediateBookingExecution = createImmediateReplyExecutionSummary(immediateBookingCandidates.length);
+  for (const candidate of immediateBookingCandidates) {
+    try {
+      const execution = await dependencies.executeImmediateBooking(candidate);
+      switch (execution.outcome) {
+        case "persisted": immediateBookingExecution.persistedCount += 1; break;
+        case "provider_accepted": immediateBookingExecution.providerAcceptedCount += 1; break;
+        case "already_executing":
+        case "already_dispatching": immediateBookingExecution.alreadyDispatchingCount += 1; break;
+        case "indeterminate": immediateBookingExecution.indeterminateCount += 1; break;
+      }
+    } catch {
+      // The durable run/journal is recovered by the existing scheduled worker.
+      immediateBookingExecution.failedCount += 1;
+    }
+  }
+
   return {
     outcome: "processed",
     routedMessageCount: messages.length,
@@ -288,5 +322,6 @@ export async function processWhatsappInboxEventWithDependencies<
     storedStatusCount,
     aiProcessingResults,
     immediateReplyExecution,
+    ...(immediateBookingCandidates.length ? { immediateBookingExecution } : {}),
   };
 }

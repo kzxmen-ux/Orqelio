@@ -106,6 +106,7 @@ function createDependencies(
     executeImmediateReply: async () => {
       throw new Error("Unexpected immediate reply execution call.");
     },
+    executeImmediateBooking: async () => ({ outcome: "already_executing" }),
     completeEvent: async () => undefined,
     failEvent: async () => undefined,
     ...overrides,

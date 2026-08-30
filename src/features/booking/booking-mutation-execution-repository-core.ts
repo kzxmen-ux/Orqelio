@@ -364,6 +364,17 @@ export function claimBookingMutationExecutionWithRpc(
   );
 }
 
+export function findBookingMutationExecutionWithRpc(
+  organizationId: string,
+  aiMessageRunId: string,
+  rpc: BookingMutationExecutionRpc,
+): Promise<PrepareBookingMutationExecutionResult | null> {
+  if (!isUuid(organizationId) || !isUuid(aiMessageRunId)) throw repositoryFailure();
+  return callRpc(rpc, "find_booking_mutation_execution", {
+    p_organization_id: organizationId, p_ai_message_run_id: aiMessageRunId,
+  }, (data) => Array.isArray(data) && data.length === 0 ? null : normalizePrepared(data));
+}
+
 export function recordBookingMutationSuccessWithRpc(
   input: BookingMutationExecutionIdentity,
   result: Extract<BookingMutationTerminalResult, { success: true }>,

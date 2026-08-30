@@ -3,6 +3,9 @@ import "server-only";
 import { createPrivilegedClient } from "@/lib/supabase/privileged";
 
 import {
+  loadAiBookingWhatsappContextWithRpc,
+  prepareAiBookingWhatsappDispatchWithRpc,
+  listActionableAiBookingWhatsappExecutionsWithRpc,
   claimAiReplyWhatsappDispatchExecutionWithRpc,
   finalizeWhatsappOutboundDispatchWithRpc,
   getWhatsappOutboundDispatchRecoveryStateWithRpc,
@@ -33,6 +36,18 @@ const rpc: WhatsappOutboundDispatchRpc = async (functionName, parameters) => {
   const { data, error } = await supabase.rpc(functionName, parameters);
   return { data, error };
 };
+
+export function loadAiBookingWhatsappContext(input: PrepareAiReplyWhatsappDispatchInput) {
+  return loadAiBookingWhatsappContextWithRpc(input, rpc);
+}
+
+export function prepareAiBookingWhatsappDispatch(input: PrepareAiReplyWhatsappDispatchInput, text: string) {
+  return prepareAiBookingWhatsappDispatchWithRpc(input, text, rpc);
+}
+
+export function listActionableAiBookingWhatsappExecutions(limit?: number) {
+  return listActionableAiBookingWhatsappExecutionsWithRpc(limit, rpc);
+}
 
 export function prepareWhatsappOutboundDispatch(
   input: PrepareWhatsappOutboundDispatchInput,

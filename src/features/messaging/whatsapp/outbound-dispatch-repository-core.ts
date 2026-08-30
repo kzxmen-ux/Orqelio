@@ -16,6 +16,46 @@ export type WhatsappOutboundDispatchRpc = (
   parameters: Record<string, unknown>,
 ) => Promise<RpcResult>;
 
+export async function loadAiBookingWhatsappContextWithRpc(
+  input: PrepareAiReplyWhatsappDispatchInput,
+  rpc: WhatsappOutboundDispatchRpc,
+): Promise<import("./ai-booking-whatsapp-executor-core.ts").BookingWhatsappContext> {
+  if (!isUuid(input.organizationId) || !isUuid(input.aiMessageRunId)) throw repositoryFailure();
+  return callRpc(rpc, "get_ai_booking_whatsapp_context", {
+    p_organization_id: input.organizationId, p_ai_message_run_id: input.aiMessageRunId,
+  }, (data) => {
+    if (!Array.isArray(data) || data.length !== 1 || !isRecord(data[0])) throw repositoryFailure();
+    const row = data[0];
+    if (row.primary_language !== null && row.primary_language !== "ru" && row.primary_language !== "kk") throw repositoryFailure();
+    if (row.dispatch_id === null && row.state !== null) throw repositoryFailure();
+    return {
+      language: row.primary_language,
+      dispatch: row.dispatch_id === null ? null : normalizeDispatchResult([row]),
+    };
+  });
+}
+
+export function prepareAiBookingWhatsappDispatchWithRpc(
+  input: PrepareAiReplyWhatsappDispatchInput,
+  text: string,
+  rpc: WhatsappOutboundDispatchRpc,
+): Promise<WhatsappOutboundDispatchResult> {
+  if (!isUuid(input.organizationId) || !isUuid(input.aiMessageRunId) ||
+    typeof text !== "string" || text.length < 1 || text.length > 2000 || text !== text.trim()) throw repositoryFailure();
+  return callRpc(rpc, "prepare_ai_booking_whatsapp_dispatch", {
+    p_organization_id: input.organizationId, p_ai_message_run_id: input.aiMessageRunId, p_text: text,
+  }, normalizeDispatchResult);
+}
+
+export function listActionableAiBookingWhatsappExecutionsWithRpc(
+  limit: number | undefined,
+  rpc: WhatsappOutboundDispatchRpc,
+): Promise<readonly ActionableAiReplyWhatsappExecution[]> {
+  const normalizedLimit = normalizeBoundedLimit(limit);
+  return callRpc(rpc, "list_actionable_ai_booking_whatsapp_executions", { p_limit: normalizedLimit },
+    (data) => normalizeActionableAiReplyWhatsappExecutions(data, normalizedLimit));
+}
+
 export type PrepareWhatsappOutboundDispatchInput = {
   organizationId: string;
   connectionId: string;

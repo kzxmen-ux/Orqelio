@@ -12,13 +12,10 @@ async function loadRows(
   aiMessageRunId: string,
 ): Promise<unknown> {
   const supabase = createPrivilegedClient();
-  const { data, error } = await supabase
-    .from("ai_message_runs")
-    .select("id, organization_id, conversation_id, status, decision")
-    .eq("id", aiMessageRunId)
-    .eq("organization_id", organizationId)
-    .eq("status", "decided")
-    .limit(2);
+  const { data, error } = await supabase.rpc("load_booking_action_source", {
+    p_organization_id: organizationId,
+    p_ai_message_run_id: aiMessageRunId,
+  });
 
   if (error) throw new Error("Booking action source is unavailable");
   return data;

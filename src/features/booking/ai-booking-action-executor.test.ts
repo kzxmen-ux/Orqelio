@@ -46,6 +46,7 @@ function dependencies(
   overrides: Partial<AiBookingActionExecutorDependencies> = {},
 ): AiBookingActionExecutorDependencies {
   return {
+    findBookingMutationExecution: async () => null,
     loadBookingActionSource: async () => ({
       success: true,
       source: {
@@ -194,6 +195,23 @@ test("repeated terminal execution returns stored success without another provide
     appointment,
   });
   assert.equal(providerCalls, 1);
+});
+
+test("recovery replays durable terminal result before catalog, dates or provider execution", async () => {
+  for (const state of ["succeeded", "failed", "indeterminate", "executing"] as const) {
+    const result = state === "succeeded" ? success : {
+      success: false as const, code: state === "failed" ? "slot_unavailable" as const : "provider_error" as const, retryable: false,
+    };
+    const recovered = await executeAiBookingActionCore(input(), dependencies({
+      findBookingMutationExecution: async () => ({ executionId: EXECUTION_ID, state, result: state === "executing" ? null : result }),
+      claimBookingMutationExecution: async () => state === "executing"
+        ? { outcome: "already_executing", executionId: EXECUTION_ID }
+        : { outcome: state, executionId: EXECUTION_ID, result },
+      composeBookingRequestForOrganization: async () => { assert.fail("must not reinterpret yesterday's date"); },
+      executeBookingForOrganization: async () => { assert.fail("must not retry create"); },
+    }));
+    assert.equal(recovered.status, state === "succeeded" ? "create_succeeded" : state === "failed" ? "create_failed" : state === "executing" ? "already_executing" : "indeterminate");
+  }
 });
 
 test("concurrent claims allow at most one create mutation", async () => {

@@ -67,6 +67,7 @@ export type AiBookingActionExecutionResult =
   | { status: "indeterminate" };
 
 export type AiBookingActionExecutorDependencies = {
+  findBookingMutationExecution(organizationId: string, aiMessageRunId: string): Promise<PrepareBookingMutationExecutionResult | null>;
   loadBookingActionSource(
     organizationId: string,
     aiMessageRunId: string,
@@ -253,6 +254,18 @@ export async function executeAiBookingActionCore(
       source.source.bookingIntent === "reschedule_appointment"
     ) {
       return unavailable("operation_not_supported");
+    }
+
+    // Resume the durable request/result before consulting mutable catalog or
+    // relative dates. An executing or terminal create can never be re-created.
+    if (source.source.bookingIntent === "create_appointment") {
+      const existing = await dependencies.findBookingMutationExecution(input.organizationId, input.aiMessageRunId);
+      if (existing) {
+        const claim = await dependencies.claimBookingMutationExecution(input.organizationId, input.aiMessageRunId);
+        if (claim.outcome === "already_executing") return { status: "already_executing" };
+        if (claim.outcome !== "claimed") return terminalResult(claim.result);
+        return executeClaimedCreate(input.organizationId, claim, dependencies);
+      }
     }
 
     const composition =

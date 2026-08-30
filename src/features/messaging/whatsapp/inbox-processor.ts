@@ -14,6 +14,7 @@ import { storeRoutedWhatsappInboundMessage } from "./inbound-message-repository"
 import { applyWhatsappDeliveryStatus } from "./delivery-status-repository";
 import { processDurableAiInboundMessage } from "../../ai-runtime/durable-inbound-processing";
 import { executeAiReplyWhatsapp } from "./ai-reply-whatsapp-executor";
+import { executeAiBookingWhatsapp } from "./ai-booking-whatsapp-executor";
 import {
   routeWhatsappDeliveryStatuses,
   type RoutedWhatsappDeliveryStatus,
@@ -30,6 +31,7 @@ const dependencies: WhatsappInboxProcessorDependencies<
     claimEvent: claimWhatsappWebhookEvent,
     completeEvent: completeWhatsappWebhookEvent,
     executeImmediateReply: executeAiReplyWhatsapp,
+    executeImmediateBooking: executeAiBookingWhatsapp,
     failEvent: failWhatsappWebhookEvent,
     routePayload: routeWhatsappInboundMessages,
     routeStatuses: routeWhatsappDeliveryStatuses,

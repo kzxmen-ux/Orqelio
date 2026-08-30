@@ -1,4 +1,4 @@
-import type { AiReplyWhatsappExecutionResult } from "./ai-reply-whatsapp-executor-core";
+import type { AiBookingWhatsappExecutionResult } from "./ai-booking-whatsapp-executor-core";
 import type {
   ActionableAiReplyWhatsappExecution,
   QuarantineStaleAiReplyWhatsappDispatchesResult,
@@ -25,7 +25,7 @@ export type AiReplyWhatsappExecutionWorkerDependencies = {
   ) => Promise<readonly ActionableAiReplyWhatsappExecution[]>;
   executeReply: (
     input: ActionableAiReplyWhatsappExecution,
-  ) => Promise<AiReplyWhatsappExecutionResult>;
+  ) => Promise<AiBookingWhatsappExecutionResult>;
 };
 
 function workerFailure(): Error {
@@ -78,6 +78,7 @@ export async function runAiReplyWhatsappExecutionWorkerWithDependencies(
           result.providerAcceptedCount += 1;
           break;
         case "already_dispatching":
+        case "already_executing":
           result.alreadyDispatchingCount += 1;
           break;
         case "indeterminate":

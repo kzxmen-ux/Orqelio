@@ -7,6 +7,7 @@ import {
 } from "./ai-booking-action-executor-core";
 import { executeBookingForOrganization } from "./booking-execution";
 import {
+  findBookingMutationExecution,
   claimBookingMutationExecution,
   markBookingMutationIndeterminate,
   prepareBookingMutationExecution,
@@ -26,6 +27,7 @@ export function executeAiBookingAction(
   return executeAiBookingActionCore(
     { ...input, nowInstant: new Date().toISOString() },
     {
+      findBookingMutationExecution,
       loadBookingActionSource,
       composeBookingRequestForOrganization,
       executeBookingForOrganization,

@@ -125,7 +125,9 @@ test("production source repository is server-only, privileged, and narrowly sele
   );
   assert.match(source, /^import "server-only";/);
   assert.match(source, /createPrivilegedClient/);
-  assert.match(source, /\.from\("ai_message_runs"\)/);
-  assert.match(source, /id, organization_id, conversation_id, status, decision/);
+  assert.match(source, /\.rpc\("load_booking_action_source"/);
+  assert.match(source, /p_organization_id: organizationId/);
+  assert.match(source, /p_ai_message_run_id: aiMessageRunId/);
+  assert.doesNotMatch(source, /\.from\(/);
   assert.doesNotMatch(source, /credential|provider_id|access_token/i);
 });

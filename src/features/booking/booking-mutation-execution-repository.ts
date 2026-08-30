@@ -3,6 +3,7 @@ import "server-only";
 import { createPrivilegedClient } from "@/lib/supabase/privileged";
 
 import {
+  findBookingMutationExecutionWithRpc,
   claimBookingMutationExecutionWithRpc,
   markBookingMutationIndeterminateWithRpc,
   prepareBookingMutationExecutionWithRpc,
@@ -24,6 +25,10 @@ const rpc: BookingMutationExecutionRpc = async (functionName, parameters) => {
   const { data, error } = await supabase.rpc(functionName, parameters);
   return { data, error };
 };
+
+export function findBookingMutationExecution(organizationId: string, aiMessageRunId: string) {
+  return findBookingMutationExecutionWithRpc(organizationId, aiMessageRunId, rpc);
+}
 
 export function prepareBookingMutationExecution(
   input: PrepareBookingMutationExecutionInput,
