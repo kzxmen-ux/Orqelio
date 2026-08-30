@@ -17,7 +17,12 @@ const BOOKING_INTENTS: ReadonlySet<string> = new Set(
 );
 
 type AiMessageRunTerminalStatus = "decided" | "blocked" | "failed";
-type DurableBookingIntent = Exclude<ModelBookingIntent, "none">;
+export type DurableBookingIntent = Exclude<ModelBookingIntent, "none">;
+
+export type DurableBookingDecisionSource = {
+  bookingIntent: DurableBookingIntent;
+  bookingRequest: ModelBookingRequest;
+};
 
 export type AiMessageRunClaimResult =
   | {
@@ -183,6 +188,24 @@ function sanitizeBookingRequest(value: unknown): ModelBookingRequest | null {
   };
 }
 
+export function sanitizeDurableBookingDecision(
+  value: unknown,
+): DurableBookingDecisionSource | null {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 3 ||
+    value.action !== "booking_action_required" ||
+    !isDurableBookingIntent(value.bookingIntent)
+  ) {
+    return null;
+  }
+
+  const bookingRequest = sanitizeBookingRequest(value.bookingRequest);
+  return bookingRequest
+    ? { bookingIntent: value.bookingIntent, bookingRequest }
+    : null;
+}
+
 function sanitizeDecision(value: unknown): SafeDecision | null {
   if (!isRecord(value)) return null;
 
@@ -192,9 +215,7 @@ function sanitizeDecision(value: unknown): SafeDecision | null {
         ? { action: "reply", text: value.text }
         : null;
     case "booking_action_required":
-      if (
-        !isDurableBookingIntent(value.bookingIntent)
-      ) {
+      if (!isDurableBookingIntent(value.bookingIntent)) {
         return null;
       }
 
