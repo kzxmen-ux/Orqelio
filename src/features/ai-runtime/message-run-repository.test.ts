@@ -33,6 +33,15 @@ const MIGRATION_URL = new URL(
 const MIGRATION_SQL = (await readFile(MIGRATION_URL, "utf8"))
   .replace(/\s+/g, " ")
   .toLowerCase();
+const BOOKING_DECISION_MIGRATION_URL = new URL(
+  "../../../supabase/migrations/20260830110813_stage_4b_durable_booking_decision.sql",
+  import.meta.url,
+);
+const BOOKING_DECISION_MIGRATION_SQL = (
+  await readFile(BOOKING_DECISION_MIGRATION_URL, "utf8")
+)
+  .replace(/\s+/g, " ")
+  .toLowerCase();
 const RECOVERY_MIGRATION_URL = new URL(
   "../../../supabase/migrations/20260826205410_ai_message_run_stale_recovery.sql",
   import.meta.url,
@@ -233,6 +242,200 @@ test("decided stores only the sanitized final decision", async () => {
       },
     },
   ]);
+});
+
+test("full bookingRequest survives durable sanitization with safe normalization", async () => {
+  const calls: unknown[] = [];
+  const result = {
+    outcome: "decided",
+    decision: {
+      action: "booking_action_required",
+      bookingIntent: "create_appointment",
+      bookingRequest: {
+        serviceQuery: "  Стрижка  ",
+        staffQuery: "  Алексей ",
+        dateText: " завтра ",
+        timeText: " 15:00 ",
+        customerName: "  Айдана  ",
+        customerPhone: "   ",
+        appointmentReference: null,
+      },
+    },
+  } as const;
+
+  await storeAiMessageRunTerminalResultWithRpc(
+    RUN_ID,
+    result,
+    async (functionName, parameters) => {
+      calls.push({ functionName, parameters });
+      return {
+        data: [
+          { outcome: "stored", run_id: RUN_ID, run_status: "decided" },
+        ],
+        error: null,
+      };
+    },
+  );
+
+  assert.deepEqual(calls, [
+    {
+      functionName: "complete_ai_message_run",
+      parameters: {
+        p_decision: {
+          action: "booking_action_required",
+          bookingIntent: "create_appointment",
+          bookingRequest: {
+            serviceQuery: "Стрижка",
+            staffQuery: "Алексей",
+            dateText: "завтра",
+            timeText: "15:00",
+            customerName: "Айдана",
+            customerPhone: null,
+            appointmentReference: null,
+          },
+        },
+        p_failure_reason: null,
+        p_run_id: RUN_ID,
+        p_terminal_status: "decided",
+      },
+    },
+  ]);
+});
+
+test("malformed, missing, and extra durable bookingRequest fields are rejected", async () => {
+  const validRequest = {
+    serviceQuery: "Стрижка",
+    staffQuery: null,
+    dateText: "завтра",
+    timeText: "15:00",
+    customerName: null,
+    customerPhone: null,
+    appointmentReference: null,
+  };
+  const invalidRequests: readonly unknown[] = [
+    null,
+    [],
+    {
+      serviceQuery: "Стрижка",
+      staffQuery: null,
+      dateText: "завтра",
+      timeText: "15:00",
+      customerName: null,
+      customerPhone: null,
+    },
+    { ...validRequest, serviceId: "internal-id" },
+    { ...validRequest, serviceQuery: 42 },
+    { ...validRequest, serviceQuery: "x".repeat(501) },
+  ];
+
+  let rpcCalls = 0;
+  for (const bookingRequest of invalidRequests) {
+    await assert.rejects(
+      storeAiMessageRunTerminalResultWithRpc(
+        RUN_ID,
+        {
+          outcome: "decided",
+          decision: {
+            action: "booking_action_required",
+            bookingIntent: "check_availability",
+            bookingRequest,
+          },
+        } as unknown as AiInboundProcessingResult,
+        async () => {
+          rpcCalls += 1;
+          return { data: null, error: null };
+        },
+      ),
+      new RegExp(`^Error: ${SAFE_REPOSITORY_ERROR.replace(".", "\\.")}$`),
+    );
+  }
+  assert.equal(rpcCalls, 0);
+});
+
+test("non-booking durable decisions retain their existing safe shapes", async () => {
+  const decisions = [
+    {
+      action: "handoff",
+      reasonCode: "customer_requested_human",
+      safeReason: "Customer requested a human",
+    },
+    { action: "no_safe_answer", reason: "model_cannot_answer" },
+  ] as const;
+  const stored: unknown[] = [];
+
+  for (const decision of decisions) {
+    await storeAiMessageRunTerminalResultWithRpc(
+      RUN_ID,
+      { outcome: "decided", decision },
+      async (_functionName, parameters) => {
+        stored.push(parameters.p_decision);
+        return {
+          data: [
+            { outcome: "stored", run_id: RUN_ID, run_status: "decided" },
+          ],
+          error: null,
+        };
+      },
+    );
+  }
+
+  assert.deepEqual(stored, decisions);
+});
+
+test("Stage 4B migration permits only the exact safe booking decision shape", () => {
+  assert.match(
+    BOOKING_DECISION_MIGRATION_SQL,
+    /create or replace function public\.complete_ai_message_run/,
+  );
+  assert.match(
+    BOOKING_DECISION_MIGRATION_SQL,
+    /p_decision - array\[ 'action', 'bookingintent', 'bookingrequest' \] = '\{\}'::jsonb/,
+  );
+  assert.match(
+    BOOKING_DECISION_MIGRATION_SQL,
+    /jsonb_typeof\(booking_request\) = 'object'/,
+  );
+  assert.match(BOOKING_DECISION_MIGRATION_SQL, /booking_request \?& array\[/);
+
+  for (const field of [
+    "servicequery",
+    "staffquery",
+    "datetext",
+    "timetext",
+    "customername",
+    "customerphone",
+    "appointmentreference",
+  ]) {
+    assert.match(
+      BOOKING_DECISION_MIGRATION_SQL,
+      new RegExp(`jsonb_typeof\\(booking_request -> '${field}'\\) = 'string'`),
+    );
+    assert.match(
+      BOOKING_DECISION_MIGRATION_SQL,
+      new RegExp(
+        `char_length\\(booking_request ->> '${field}'\\) between 1 and 500`,
+      ),
+    );
+    assert.match(
+      BOOKING_DECISION_MIGRATION_SQL,
+      new RegExp(
+        `booking_request ->> '${field}' = btrim\\(booking_request ->> '${field}'\\)`,
+      ),
+    );
+  }
+
+  assert.doesNotMatch(
+    BOOKING_DECISION_MIGRATION_SQL,
+    /serviceid|staffid|appointmentid|providerid|connectionid|locationid/,
+  );
+  assert.match(
+    BOOKING_DECISION_MIGRATION_SQL,
+    /revoke all on function public\.complete_ai_message_run\(uuid, text, jsonb, text\) from public, anon, authenticated, service_role/,
+  );
+  assert.match(
+    BOOKING_DECISION_MIGRATION_SQL,
+    /grant execute on function public\.complete_ai_message_run\(uuid, text, jsonb, text\) to service_role/,
+  );
 });
 
 test("blocked stores only its safe reason", async () => {

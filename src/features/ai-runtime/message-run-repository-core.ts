@@ -2,17 +2,22 @@ import type {
   AiInboundProcessingInput,
   AiInboundProcessingResult,
 } from "./inbound-processing-core.ts";
+import {
+  MAX_MODEL_BOOKING_REQUEST_FIELD_CHARACTERS,
+  MODEL_BOOKING_INTENTS,
+  MODEL_BOOKING_REQUEST_FIELDS,
+  type ModelBookingIntent,
+  type ModelBookingRequest,
+} from "./decision-types.ts";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const BOOKING_INTENTS = new Set([
-  "check_availability",
-  "create_appointment",
-  "reschedule_appointment",
-  "cancel_appointment",
-]);
+const BOOKING_INTENTS: ReadonlySet<string> = new Set(
+  MODEL_BOOKING_INTENTS.filter((intent) => intent !== "none"),
+);
 
 type AiMessageRunTerminalStatus = "decided" | "blocked" | "failed";
+type DurableBookingIntent = Exclude<ModelBookingIntent, "none">;
 
 export type AiMessageRunClaimResult =
   | {
@@ -66,7 +71,15 @@ export type AiMessageRunRpc = (
   parameters: Record<string, unknown>,
 ) => Promise<AiMessageRunRpcResult>;
 
-type SafeDecision = Record<string, string>;
+type SafeDecision =
+  | { action: "reply"; text: string }
+  | {
+      action: "booking_action_required";
+      bookingIntent: DurableBookingIntent;
+      bookingRequest: ModelBookingRequest;
+    }
+  | { action: "handoff"; reasonCode: string; safeReason: string }
+  | { action: "no_safe_answer"; reason: string };
 
 function repositoryFailure(): Error {
   return new Error("AI message run repository operation failed.");
@@ -98,6 +111,78 @@ function isTerminalStatus(
   return value === "decided" || value === "blocked" || value === "failed";
 }
 
+function isDurableBookingIntent(
+  value: unknown,
+): value is DurableBookingIntent {
+  return typeof value === "string" && BOOKING_INTENTS.has(value);
+}
+
+type SanitizedBookingRequestField =
+  | { valid: true; value: string | null }
+  | { valid: false };
+
+function sanitizeBookingRequestField(
+  value: unknown,
+): SanitizedBookingRequestField {
+  if (value === null) return { valid: true, value: null };
+  if (typeof value !== "string") return { valid: false };
+
+  const normalized = value.trim();
+  if (normalized.length > MAX_MODEL_BOOKING_REQUEST_FIELD_CHARACTERS) {
+    return { valid: false };
+  }
+
+  return {
+    valid: true,
+    value: normalized.length === 0 ? null : normalized,
+  };
+}
+
+function sanitizeBookingRequest(value: unknown): ModelBookingRequest | null {
+  if (!isRecord(value)) return null;
+
+  const keys = Object.keys(value);
+  if (
+    keys.length !== MODEL_BOOKING_REQUEST_FIELDS.length ||
+    !MODEL_BOOKING_REQUEST_FIELDS.every((field) =>
+      Object.hasOwn(value, field),
+    )
+  ) {
+    return null;
+  }
+
+  const serviceQuery = sanitizeBookingRequestField(value.serviceQuery);
+  const staffQuery = sanitizeBookingRequestField(value.staffQuery);
+  const dateText = sanitizeBookingRequestField(value.dateText);
+  const timeText = sanitizeBookingRequestField(value.timeText);
+  const customerName = sanitizeBookingRequestField(value.customerName);
+  const customerPhone = sanitizeBookingRequestField(value.customerPhone);
+  const appointmentReference = sanitizeBookingRequestField(
+    value.appointmentReference,
+  );
+  if (
+    !serviceQuery.valid ||
+    !staffQuery.valid ||
+    !dateText.valid ||
+    !timeText.valid ||
+    !customerName.valid ||
+    !customerPhone.valid ||
+    !appointmentReference.valid
+  ) {
+    return null;
+  }
+
+  return {
+    serviceQuery: serviceQuery.value,
+    staffQuery: staffQuery.value,
+    dateText: dateText.value,
+    timeText: timeText.value,
+    customerName: customerName.value,
+    customerPhone: customerPhone.value,
+    appointmentReference: appointmentReference.value,
+  };
+}
+
 function sanitizeDecision(value: unknown): SafeDecision | null {
   if (!isRecord(value)) return null;
 
@@ -107,11 +192,18 @@ function sanitizeDecision(value: unknown): SafeDecision | null {
         ? { action: "reply", text: value.text }
         : null;
     case "booking_action_required":
-      return typeof value.bookingIntent === "string" &&
-        BOOKING_INTENTS.has(value.bookingIntent)
+      if (
+        !isDurableBookingIntent(value.bookingIntent)
+      ) {
+        return null;
+      }
+
+      const bookingRequest = sanitizeBookingRequest(value.bookingRequest);
+      return bookingRequest
         ? {
             action: "booking_action_required",
             bookingIntent: value.bookingIntent,
+            bookingRequest,
           }
         : null;
     case "handoff":
