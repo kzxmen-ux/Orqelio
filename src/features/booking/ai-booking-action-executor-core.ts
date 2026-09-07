@@ -1,3 +1,5 @@
+import { Temporal } from "@js-temporal/polyfill";
+
 import type { BookingActionSourceResult } from "./booking-action-source-repository-core.ts";
 import type { BookingExecutionResult } from "./booking-execution-core.ts";
 import type {
@@ -226,7 +228,34 @@ async function executeClaimedCreate(
     return { status: "indeterminate" };
   }
 
-  return persistTerminalResult(identity, execution.result, dependencies);
+  if (!execution.result.success) {
+    return persistTerminalResult(identity, execution.result, dependencies);
+  }
+
+  const trustedStartAt = claim.trustedRequest.startAt;
+  try {
+    if (
+      typeof trustedStartAt !== "string" ||
+      !Temporal.Instant.from(execution.result.data.startAt).equals(
+        Temporal.Instant.from(trustedStartAt),
+      )
+    ) {
+      await markIndeterminateBestEffort(identity, dependencies);
+      return { status: "indeterminate" };
+    }
+  } catch {
+    await markIndeterminateBestEffort(identity, dependencies);
+    return { status: "indeterminate" };
+  }
+
+  return persistTerminalResult(
+    identity,
+    {
+      success: true,
+      data: { ...execution.result.data, startAt: trustedStartAt },
+    },
+    dependencies,
+  );
 }
 
 export async function executeAiBookingActionCore(

@@ -169,6 +169,109 @@ test("verified create success is persisted with provider appointment ID", async 
   assert.equal(result.status === "create_succeeded" && result.appointment.id, "provider-appointment-42");
 });
 
+test("equivalent provider start instants persist with the exact trusted representation", async () => {
+  for (const providerStartAt of [
+    "2026-09-07T09:00:00.000Z",
+    "2026-09-07T14:00:00+05:00",
+  ]) {
+    const claimedRequest = {
+      ...trustedRequest,
+      startAt: "2026-09-07T09:00:00Z",
+    };
+    let providerCalls = 0;
+    let successPersistenceCalls = 0;
+    const result = await executeAiBookingActionCore(input(), dependencies({
+      claimBookingMutationExecution: async () => ({
+        outcome: "claimed",
+        executionId: EXECUTION_ID,
+        trustedRequest: claimedRequest,
+      }),
+      executeBookingForOrganization: async () => {
+        providerCalls += 1;
+        return {
+          status: "executed",
+          intent: "create_appointment",
+          result: {
+            success: true,
+            data: { ...appointment, startAt: providerStartAt },
+          },
+        };
+      },
+      recordBookingMutationSuccess: async (_identity, terminalResult) => {
+        successPersistenceCalls += 1;
+        assert.equal(terminalResult.data.startAt, claimedRequest.startAt);
+        assert.equal(terminalResult.data.id, appointment.id);
+        assert.equal(terminalResult.data.serviceId, appointment.serviceId);
+        assert.equal(terminalResult.data.staffId, appointment.staffId);
+        assert.equal(terminalResult.data.endAt, appointment.endAt);
+        assert.equal(terminalResult.data.status, "confirmed");
+        return {
+          executionId: EXECUTION_ID,
+          state: "succeeded",
+          result: terminalResult,
+        };
+      },
+    }));
+
+    assert.equal(result.status, "create_succeeded");
+    assert.equal(
+      result.status === "create_succeeded" ? result.appointment.startAt : null,
+      claimedRequest.startAt,
+    );
+    assert.equal(providerCalls, 1);
+    assert.equal(successPersistenceCalls, 1);
+  }
+});
+
+test("different or invalid provider start instants become indeterminate without success persistence", async () => {
+  for (const providerStartAt of [
+    "2026-09-07T09:00:01Z",
+    "not-an-instant",
+  ]) {
+    let providerCalls = 0;
+    let successPersistenceCalls = 0;
+    let indeterminateCalls = 0;
+    const result = await executeAiBookingActionCore(input(), dependencies({
+      claimBookingMutationExecution: async () => ({
+        outcome: "claimed",
+        executionId: EXECUTION_ID,
+        trustedRequest: {
+          ...trustedRequest,
+          startAt: "2026-09-07T09:00:00Z",
+        },
+      }),
+      executeBookingForOrganization: async () => {
+        providerCalls += 1;
+        return {
+          status: "executed",
+          intent: "create_appointment",
+          result: {
+            success: true,
+            data: { ...appointment, startAt: providerStartAt },
+          },
+        };
+      },
+      recordBookingMutationSuccess: async () => {
+        successPersistenceCalls += 1;
+        throw new Error("must not persist mismatched provider success");
+      },
+      markBookingMutationIndeterminate: async () => {
+        indeterminateCalls += 1;
+        return {
+          executionId: EXECUTION_ID,
+          state: "indeterminate",
+          result: { success: false, code: "provider_error", retryable: false },
+        };
+      },
+    }));
+
+    assert.deepEqual(result, { status: "indeterminate" });
+    assert.equal(providerCalls, 1);
+    assert.equal(successPersistenceCalls, 0);
+    assert.equal(indeterminateCalls, 1);
+  }
+});
+
 test("repeated terminal execution returns stored success without another provider call", async () => {
   let state: "prepared" | "succeeded" = "prepared";
   let providerCalls = 0;

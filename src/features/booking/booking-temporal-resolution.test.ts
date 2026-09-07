@@ -106,22 +106,111 @@ test("missing date needs input; malformed, unsupported, and past dates need clar
   }
 });
 
-test("normalizes supported time prefixes and rejects fuzzy or malformed time", () => {
-  for (const timeText of ["15:00", "  В   15:00 ", "САҒАТ 15:00"] as const) {
+test("normalizes common explicit Russian and Kazakh clock forms", () => {
+  for (const timeText of [
+    "14:00",
+    "14 00",
+    "14.00",
+    "14-00",
+    "14",
+    "в 14",
+    "на 14",
+    "в 14:00",
+    "в 14 00",
+    "на 14:00",
+    "14 часов",
+    "сағат 14",
+    "сағат 14:00",
+    "14:00-де",
+    "14-де",
+  ] as const) {
     const result = resolveBookingTemporal(
-      input({ timeText }, { intent: "create_appointment" }),
+      input({ dateText: "2026-08-30", timeText }, { intent: "create_appointment" }),
     );
     assert.equal(result.status, "resolved");
     if (result.status === "resolved") {
-      assert.equal(result.localTime, "15:00");
+      assert.equal(result.localTime, "14:00");
     }
   }
+});
 
-  for (const timeText of ["после обеда", "около 15", "25:00", "15:7"] as const) {
-    assert.deepEqual(resolveBookingTemporal(input({ timeText })), {
-      status: "needs_clarification",
-      field: "timeText",
-    });
+test("preserves explicitly supplied minutes across supported clock forms", () => {
+  for (const timeText of [
+    "14:30",
+    "14 30",
+    "14.30",
+    "14-30",
+    "в 14 30",
+    "сағат 14:30",
+    "14 часов 30 минут",
+  ] as const) {
+    const result = resolveBookingTemporal(
+      input({ dateText: "2026-08-30", timeText }, { intent: "create_appointment" }),
+    );
+    assert.equal(result.status, "resolved");
+    if (result.status === "resolved") {
+      assert.equal(result.localTime, "14:30");
+    }
+  }
+});
+
+test("normalizes one-digit hours without inventing minutes", () => {
+  for (const timeText of ["9", "09:00", "9 00", "в 9", "сағат 9"] as const) {
+    const result = resolveBookingTemporal(
+      input({ dateText: "2026-08-30", timeText }, { intent: "create_appointment" }),
+    );
+    assert.equal(result.status, "resolved");
+    if (result.status === "resolved") assert.equal(result.localTime, "09:00");
+  }
+});
+
+test("normalizes explicit Russian and Kazakh day parts", () => {
+  const cases = [
+    ["2 часа дня", "14:00"],
+    ["в 2 часа дня", "14:00"],
+    ["2 дня", "14:00"],
+    ["полдень", "12:00"],
+    ["полночь", "00:00"],
+    ["9 утра", "09:00"],
+    ["в 9 утра", "09:00"],
+    ["7 вечера", "19:00"],
+    ["в 7 вечера", "19:00"],
+    ["2 ночи", "02:00"],
+    ["түскі 2", "14:00"],
+    ["таңғы 9", "09:00"],
+    ["кешкі 7", "19:00"],
+    ["түнгі 2", "02:00"],
+  ] as const;
+
+  for (const [timeText, localTime] of cases) {
+    const result = resolveBookingTemporal(
+      input({ dateText: "2026-08-30", timeText }, { intent: "create_appointment" }),
+    );
+    assert.equal(result.status, "resolved");
+    if (result.status === "resolved") assert.equal(result.localTime, localTime);
+  }
+});
+
+test("rejects fuzzy, ambiguous, and invalid time instead of inventing one", () => {
+  for (const timeText of [
+    "часа в два",
+    "после обеда",
+    "вечером",
+    "ближе к вечеру",
+    "около двух",
+    "около 15",
+    "где-то в семь",
+    "25:00",
+    "14:99",
+    "99",
+    "15:7",
+  ] as const) {
+    assert.deepEqual(
+      resolveBookingTemporal(
+        input({ timeText }, { intent: "create_appointment" }),
+      ),
+      { status: "needs_clarification", field: "timeText" },
+    );
   }
 });
 

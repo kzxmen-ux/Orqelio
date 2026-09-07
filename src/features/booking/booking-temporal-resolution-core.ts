@@ -125,15 +125,64 @@ function parseDateText(
 }
 
 function parseTimeText(value: string): Temporal.PlainTime | null {
-  const match = /^(?:(?:в|сағат) )?([01]?\d|2[0-3]):([0-5]\d)$/.exec(value);
-  if (!match) {
-    return null;
+  if (value === "полдень") {
+    return Temporal.PlainTime.from("12:00");
+  }
+  if (value === "полночь") {
+    return Temporal.PlainTime.from("00:00");
   }
 
-  return Temporal.PlainTime.from({
-    hour: Number(match[1]),
-    minute: Number(match[2]),
-  });
+  const dayPartMatch =
+    /^(?:в )?(\d{1,2})(?: (?:час|часа|часов))? (утра|дня|вечера|ночи)$/.exec(
+      value,
+    ) ?? /^(таңғы|түскі|кешкі|түнгі) (\d{1,2})$/.exec(value);
+  if (dayPartMatch) {
+    const kazakhPrefix = Number.isNaN(Number(dayPartMatch[1]));
+    const hour = Number(dayPartMatch[kazakhPrefix ? 2 : 1]);
+    const dayPart = dayPartMatch[kazakhPrefix ? 1 : 2];
+    if (hour < 1 || hour > 12) return null;
+
+    const isLaterDayPart =
+      dayPart === "дня" ||
+      dayPart === "вечера" ||
+      dayPart === "түскі" ||
+      dayPart === "кешкі";
+    const normalizedHour = isLaterDayPart
+      ? hour === 12
+        ? 12
+        : hour + 12
+      : hour === 12
+        ? 0
+        : hour;
+    return Temporal.PlainTime.from({ hour: normalizedHour, minute: 0 });
+  }
+
+  const hoursAndMinutesMatch =
+    /^(\d{1,2}) (?:час|часа|часов)(?: (\d{1,2}) (?:минута|минуты|минут))?$/.exec(
+      value,
+    );
+  if (hoursAndMinutesMatch) {
+    return plainTimeOrNull(
+      Number(hoursAndMinutesMatch[1]),
+      hoursAndMinutesMatch[2] ? Number(hoursAndMinutesMatch[2]) : 0,
+    );
+  }
+
+  const clockMatch =
+    /^(?:(?:в|на|сағат) )?(\d{1,2})(?:([:. -])(\d{2}))?(?:-де)?$/.exec(
+      value,
+    );
+  if (!clockMatch) return null;
+
+  return plainTimeOrNull(
+    Number(clockMatch[1]),
+    clockMatch[3] ? Number(clockMatch[3]) : 0,
+  );
+}
+
+function plainTimeOrNull(hour: number, minute: number): Temporal.PlainTime | null {
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return Temporal.PlainTime.from({ hour, minute });
 }
 
 function toInstantRejectingDst(
